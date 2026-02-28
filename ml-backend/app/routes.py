@@ -8,6 +8,7 @@ NutriSight ML API routes.
   GET  /api/weekly-plan             – RL-based 7-day meal plan for current user
 """
 
+import os
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -40,8 +41,9 @@ nutrition_calc = NutritionCalculator()
 USER_SERVICE_BASE_URL = "http://localhost:5000"
 
 # ── Load food dataset & init bandit + recommender ──────────────────────────
-# Adjust path if your CSV is elsewhere
-FOOD_CSV_PATH = "dataset/sample.csv"
+# Resolve path relative to ml-backend root so it works regardless of cwd
+_ML_BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+FOOD_CSV_PATH = os.path.join(_ML_BACKEND_ROOT, "dataset", "sample.csv")
 
 try:
     food_df = pd.read_csv(FOOD_CSV_PATH)
@@ -358,87 +360,6 @@ async def weekly_plan(
     # ── 5) Inject fiber_g and water_ml into daily_targets ────────────────
     cal = plan["daily_targets"].get("calories", 2000)
     plan["daily_targets"]["fiber_g"]  = round(14 * cal / 1000, 1)
-    plan["daily_targets"]["water_ml"] = round(35 * profile.weight_kg)
-
-    return plan
-    """
-    Build a 7-day RL-based meal plan for the *current* user.
-    This endpoint calls the main NutriSight API at:
-        GET http://localhost:5000/api/users/me
-    using the same Authorization header (if provided).
-    """
-
-    # ── 1) Fetch current user profile from main backend ───────────────────
-    headers = {}
-    if authorization:
-        headers["Authorization"] = authorization
-
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(
-            f"{USER_SERVICE_BASE_URL}/api/users/me",
-            headers=headers,
-            timeout=10.0,
-        )
-
-    if resp.status_code != 200:
-        raise HTTPException(
-            status_code=resp.status_code,
-            detail=f"Failed to fetch user profile from main API: {resp.text}",
-        )
-
-    user = resp.json()
-    # Expected fields (from your sample):
-    # _id, name, email, gender, height, weight, age, __v
-
-    # ── 2) Map user JSON to UserProfile for recommender ───────────────────
-    raw_gender = (user.get("gender") or "male").lower()
-    gender: str = "male" if raw_gender not in ("male", "female") else raw_gender
-
-    raw_height = user.get("height")
-    raw_weight = user.get("weight")
-    raw_age = user.get("age")
-
-    try:
-        height_cm = float(raw_height) if raw_height is not None else 170.0
-    except Exception:
-        height_cm = 170.0
-
-    try:
-        weight_kg = float(raw_weight) if raw_weight is not None else 70.0
-    except Exception:
-        weight_kg = 70.0
-
-    try:
-        age = int(raw_age) if raw_age is not None else 25
-    except Exception:
-        age = 25
-
-    # Validate goal/activity/diet values
-    if goal not in ("weight_loss", "maintenance", "muscle_gain"):
-        goal = "maintenance"
-    if activity_level not in ("sedentary", "light", "moderate", "very_active", "extra_active"):
-        activity_level = "moderate"
-    dietary_pref = "veg" if dietary_pref.lower() == "veg" else "non-veg"
-
-    profile = UserProfile(
-        user_id=str(user.get("_id", "unknown")),
-        height_cm=height_cm,
-        weight_kg=weight_kg,
-        age=age,
-        gender=gender,               # type: ignore[arg-type]
-        activity_level=activity_level,  # type: ignore[arg-type]
-        goal=goal,                   # type: ignore[arg-type]
-        dietary_pref=dietary_pref,   # type: ignore[arg-type]
-        allergies=None,
-    )
-
-    # ── 3) Generate weekly plan using RL recommender ──────────────────────
-    plan = meal_recommender.generate_weekly_plan(profile)
-
-    # ── 4) Inject fiber_g and water_ml into daily_targets ─────────────────
-    # fiber: ~14g per 1000 kcal; water: ~35ml per kg body weight
-    cal = plan["daily_targets"].get("calories", 2000)
-    plan["daily_targets"]["fiber_g"] = round(14 * cal / 1000, 1)
     plan["daily_targets"]["water_ml"] = round(35 * profile.weight_kg)
 
     return plan

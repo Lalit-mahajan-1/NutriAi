@@ -99,9 +99,10 @@ export default function MealPlansPage() {
     } catch { /* silent */ }
   }, [user]);
 
+  // Load likes/dislikes when signed in; weekly plan is generated only on button click
   useEffect(() => {
-    if (isAuthenticated) { fetchPlan(); fetchReactions(); }
-  }, [isAuthenticated, fetchPlan, fetchReactions]);
+    if (isAuthenticated) fetchReactions();
+  }, [isAuthenticated, fetchReactions]);
 
   // ── Reaction toggle ───────────────────────────────────────────────
   const toggleReaction = async (meal: MealEntry, action: "liked" | "disliked") => {
