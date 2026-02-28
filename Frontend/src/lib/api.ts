@@ -141,17 +141,38 @@ export const mlApi = {
     fetch(`${ML_URL}/scan-history/${user_id}?limit=${limit}`)
       .then(r => r.json() as Promise<{ scans: ScanRecord[]; count: number }>),
 
-  // ── Recommendation Engine ─────────────────────────────────────────
+  // ── Recommendation Engine (ML backend /recommender) ─────────────────
+  /** Optional profile avoids ML backend calling Node user service (faster, no timeout). */
   getWeeklyPlan: (
     token: string,
     goal: "weight_loss" | "maintenance" | "muscle_gain" = "maintenance",
     activityLevel: string = "moderate",
     dietaryPref: "veg" | "non-veg" = "veg",
-  ) =>
-    fetch(
-      `${ML_URL}/weekly-plan?goal=${goal}&activity_level=${activityLevel}&dietary_pref=${dietaryPref}`,
-      { headers: { Authorization: `Bearer ${token}` } },
-    ).then(r => r.json() as Promise<WeeklyPlan>),
+    profile?: { height?: number | null; weight?: number | null; age?: number | null; gender?: string | null; user_id?: string } | null,
+  ) => {
+    const params = new URLSearchParams({
+      goal,
+      activity_level: activityLevel,
+      dietary_pref: dietaryPref,
+    });
+    if (profile?.height != null && profile?.weight != null && profile?.age != null && profile?.gender != null) {
+      params.set("height", String(profile.height));
+      params.set("weight", String(profile.weight));
+      params.set("age", String(profile.age));
+      params.set("gender", profile.gender);
+      if (profile.user_id) params.set("user_id", profile.user_id);
+    }
+    return fetch(`${ML_URL}/weekly-plan?${params.toString()}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    }).then(async (r) => {
+      const data = await r.json();
+      if (!r.ok) {
+        const msg = (data?.detail ?? data?.message ?? "Failed to load recommendations") as string;
+        throw new Error(Array.isArray(msg) ? msg.join(" ") : msg);
+      }
+      return data as WeeklyPlan;
+    });
+  },
 
   getPreferences: (userId: string) =>
     fetch(`${ML_URL}/preferences/${userId}`)

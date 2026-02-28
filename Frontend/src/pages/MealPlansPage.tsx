@@ -45,7 +45,7 @@ function collectAllMeals(plan: WeeklyPlan): MealEntry[] {
 // ═══════════════════════════════════════════════════════════════════
 export default function MealPlansPage() {
   const ref = useSectionAnimation(true);
-  const { user, token, isAuthenticated } = useAuth();
+  const { user, profile, token, isAuthenticated } = useAuth();
 
   // ── ML settings ──────────────────────────────────────────────────
   const [goal, setGoal]         = useState<Goal>("maintenance");
@@ -61,18 +61,28 @@ export default function MealPlansPage() {
   const [reactions, setReactions]         = useState<Record<string, Reaction>>({});
   const [reactionLoading, setRxnLoading]  = useState<Set<string>>(new Set());
 
-  // ── Fetch plan ────────────────────────────────────────────────────
+  // ── Fetch plan (recommendation engine: ml-backend/recommender) ───────
   const fetchPlan = useCallback(async () => {
     if (!token) return;
     setLoading(true); setError(null);
     try {
-      setPlan(await mlApi.getWeeklyPlan(token, goal, activity, diet));
-    } catch {
-      setError("ML server unreachable — check that it's running on :8000");
+      const profileParams =
+        profile && profile.height != null && profile.weight != null && profile.age != null && profile.gender != null
+          ? {
+              height: profile.height,
+              weight: profile.weight,
+              age: profile.age,
+              gender: profile.gender,
+              user_id: user?._id,
+            }
+          : undefined;
+      setPlan(await mlApi.getWeeklyPlan(token, goal, activity, diet, profileParams ?? undefined));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "ML server unreachable — check that it's running on :8000");
     } finally {
       setLoading(false);
     }
-  }, [token, goal, diet, activity]);
+  }, [token, goal, diet, activity, profile, user]);
 
   // ── Fetch reactions ───────────────────────────────────────────────
   const fetchReactions = useCallback(async () => {
