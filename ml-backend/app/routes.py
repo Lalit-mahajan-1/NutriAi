@@ -289,11 +289,18 @@ async def weekly_plan(
         resolved_gender: str = "male" if raw_gender not in ("male", "female") else raw_gender
 
     else:
-        # Fallback: call the Node backend to get the user profile
+        # Fallback defaults if user-service is unavailable or returns non-200.
+        resolved_user_id = user_id or "anonymous"
+        height_cm = 170.0
+        weight_kg = 70.0
+        resolved_age = 25
+        resolved_gender = "male"
+
         headers: dict = {}
         if authorization:
             headers["Authorization"] = authorization
 
+        resp = None
         try:
             async with httpx.AsyncClient() as client:
                 resp = await client.get(
@@ -301,38 +308,28 @@ async def weekly_plan(
                     headers=headers,
                     timeout=8.0,
                 )
-        except httpx.ReadTimeout:
-            raise HTTPException(
-                status_code=504,
-                detail="User service timed out. Pass height/weight/age/gender as query params to avoid this.",
-            )
-        except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"User service error: {exc}")
-
-        if resp.status_code != 200:
-            raise HTTPException(
-                status_code=resp.status_code,
-                detail=f"Failed to fetch user profile: {resp.text}",
-            )
-
-        user = resp.json()
-        resolved_user_id = str(user.get("_id", "unknown"))
-
-        try:
-            height_cm = float(user.get("height") or 170)
         except Exception:
-            height_cm = 170.0
-        try:
-            weight_kg = float(user.get("weight") or 70)
-        except Exception:
-            weight_kg = 70.0
-        try:
-            resolved_age = int(user.get("age") or 25)
-        except Exception:
-            resolved_age = 25
+            resp = None
 
-        raw_gender = (user.get("gender") or "male").lower()
-        resolved_gender = "male" if raw_gender not in ("male", "female") else raw_gender
+        if resp is not None and resp.status_code == 200:
+            user = resp.json()
+            resolved_user_id = str(user.get("_id", resolved_user_id))
+
+            try:
+                height_cm = float(user.get("height") or height_cm)
+            except Exception:
+                pass
+            try:
+                weight_kg = float(user.get("weight") or weight_kg)
+            except Exception:
+                pass
+            try:
+                resolved_age = int(user.get("age") or resolved_age)
+            except Exception:
+                pass
+
+            raw_gender = (user.get("gender") or resolved_gender).lower()
+            resolved_gender = "male" if raw_gender not in ("male", "female") else raw_gender
 
     # ── 2) Validate enums ────────────────────────────────────────────────
     if goal not in ("weight_loss", "maintenance", "muscle_gain"):
@@ -407,7 +404,11 @@ async def like_meal(req: LikeRequest):
     Upsert a like for a meal.
     Uses (user_id + dish_name) as the unique key so duplicate likes are idempotent.
     """
+    from app.database import get_db
+
     prefs = get_preferences_collection()
+    db = get_db()
+    dislikes_col = db["meal_dislikes"]
 
     doc = {
         "user_id":      req.user_id,
@@ -427,6 +428,10 @@ async def like_meal(req: LikeRequest):
         upsert=True,
     )
 
+    # If user likes a meal, clear any prior dislike for the same dish.
+    await dislikes_col.delete_one({"user_id": req.user_id, "dish_name": req.dish_name})
+    bandit.dislikes.pop((req.user_id, req.dish_name), None)
+
     return {"message": "Meal liked", "dish_name": req.dish_name}
 
 
@@ -445,6 +450,29 @@ async def unlike_meal(req: UnlikeRequest):
         raise HTTPException(status_code=404, detail="Preference not found")
 
     return {"message": "Meal unliked", "dish_name": req.dish_name}
+
+
+@router.delete("/preferences/undislike")
+async def undislike_meal(req: UnlikeRequest):
+    """
+    Remove a dislike for a (user_id, dish_name) pair.
+    Returns 404 if it didn't exist.
+    """
+    from app.database import get_db
+
+    db = get_db()
+    dislikes_col = db["meal_dislikes"]
+    result = await dislikes_col.delete_one(
+        {"user_id": req.user_id, "dish_name": req.dish_name}
+    )
+
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Dislike not found")
+
+    # Also clear in-memory hard exclusion used by LinUCB filtering.
+    bandit.dislikes.pop((req.user_id, req.dish_name), None)
+
+    return {"message": "Meal undisliked", "dish_name": req.dish_name}
 
 
 # ── Dislike endpoint — teaches the bandit to avoid this meal ────────────────

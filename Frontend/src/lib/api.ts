@@ -202,7 +202,7 @@ export const mlApi = {
 
   /** Remove a dislike (undo dislike) */
   undislikeMeal: (token: string, userId: string, dishName: string) =>
-    fetch(`${ML_URL}/preferences/unlike`, {
+    fetch(`${ML_URL}/preferences/undislike`, {
       method: "DELETE",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: JSON.stringify({ user_id: userId, dish_name: dishName }),
