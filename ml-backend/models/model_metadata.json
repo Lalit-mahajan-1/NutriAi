@@ -1,0 +1,75 @@
+{
+  "model_type": "RandomForestClassifier",
+  "training_date": "2026-02-27T12:49:04.466386",
+  "feature_columns": [
+    "bmi",
+    "waist_hip_ratio",
+    "shoulder_waist_ratio",
+    "torso_leg_ratio",
+    "body_aspect_ratio",
+    "age",
+    "gender_encoded"
+  ],
+  "classes": [
+    "extremely_obese",
+    "normal",
+    "obese",
+    "overweight",
+    "under_weight"
+  ],
+  "hyperparameters": {
+    "max_depth": 10,
+    "min_samples_leaf": 2,
+    "min_samples_split": 5,
+    "n_estimators": 200
+  },
+  "metrics": {
+    "accuracy": 1.0,
+    "confusion_matrix": [
+      [
+        30,
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        60,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        45,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        53,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        0,
+        37
+      ]
+    ],
+    "feature_importance": [
+      0.3647963588988802,
+      0.13098732858521647,
+      0.12807668613360254,
+      0.0486064942935319,
+      0.3245823521682456,
+      0.0013354101696017911,
+      0.00161536975092149
+    ]
+  }
+}

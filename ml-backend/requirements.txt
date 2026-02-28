@@ -1,0 +1,14 @@
+numpy
+pandas
+scikit-learn
+opencv-python
+mediapipe
+joblib
+fastapi
+uvicorn[standard]
+httpx
+python-multipart
+python-dotenv
+pillow
+motor
+pymongo

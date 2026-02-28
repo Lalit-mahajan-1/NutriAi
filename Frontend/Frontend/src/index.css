@@ -1,0 +1,230 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=Outfit:wght@300;400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 30 50% 97%;
+    --foreground: 350 20% 20%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 350 20% 20%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 350 20% 20%;
+
+    --primary: 346 60% 65%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 30 40% 93%;
+    --secondary-foreground: 350 20% 25%;
+
+    --muted: 30 30% 94%;
+    --muted-foreground: 350 10% 50%;
+
+    --accent: 20 70% 70%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 30 20% 88%;
+    --input: 30 20% 88%;
+    --ring: 346 60% 65%;
+
+    --radius: 1rem;
+
+    --sidebar-background: 0 0% 100%;
+    --sidebar-foreground: 350 20% 20%;
+    --sidebar-primary: 346 60% 65%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 30 40% 93%;
+    --sidebar-accent-foreground: 350 20% 25%;
+    --sidebar-border: 30 20% 88%;
+    --sidebar-ring: 346 60% 65%;
+
+    --pink-soft: 346 60% 65%;
+    --cream: 30 50% 97%;
+    --peach: 20 70% 70%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-background text-foreground font-body;
+    body {
+  background: #fe95a5;
+}
+  }
+}
+
+@layer utilities {
+  .card-hover {
+    transition: transform 0.3s ease, box-shadow 0.3s ease;
+  }
+
+  .card-hover:hover {
+    transform: translateY(-4px) scale(1.02);
+    box-shadow: 0 12px 40px hsl(346 60% 65% / 0.12),
+                0 4px 12px hsl(0 0% 0% / 0.04);
+  }
+
+  .card-glow {
+    transition: box-shadow 0.3s ease, transform 0.3s ease;
+  }
+
+  .card-glow:hover {
+    box-shadow: 0 0 24px hsl(346 60% 65% / 0.18),
+                0 8px 30px hsl(0 0% 0% / 0.06);
+    transform: scale(1.03);
+  }
+
+  .btn-hover {
+    transition: transform 0.25s ease, box-shadow 0.25s ease, background-color 0.25s ease;
+  }
+
+  .btn-hover:hover {
+    transform: scale(1.05);
+    box-shadow: 0 6px 24px hsl(346 60% 65% / 0.3);
+  }
+
+  .nav-link {
+    position: relative;
+  }
+
+  .nav-link::after {
+    content: '';
+    position: absolute;
+    bottom: -2px;
+    left: 0;
+    width: 0;
+    height: 2px;
+    background: hsl(var(--primary));
+    transition: width 0.3s ease;
+    border-radius: 1px;
+  }
+
+  .nav-link:hover::after,
+  .nav-link.active::after {
+    width: 100%;
+  }
+
+  .section-fade {
+    opacity: 0;
+    transform: translateY(30px);
+    transition: opacity 0.6s ease, transform 0.6s ease;
+  }
+
+  .section-fade.visible {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  .scroll-snap-x {
+    scroll-snap-type: x mandatory;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .scroll-snap-x > * {
+    scroll-snap-align: start;
+  }
+
+  @keyframes float {
+    0%, 100% { transform: translateY(0px); }
+    50% { transform: translateY(-12px); }
+  }
+
+  .animate-float {
+    animation: float 5s ease-in-out infinite;
+  }
+}
+@keyframes float {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-12px); }
+}
+
+.animate-float {
+  animation: float 4s ease-in-out infinite;
+}
+/* Floating slow vertical movement */
+@keyframes floatSlow {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(20px); }
+}
+
+.animate-float-slow {
+  animation: floatSlow 4s ease-in-out infinite;
+}
+
+/* Horizontal infinite scroll */
+@keyframes scroll {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+
+.animate-scroll {
+  animation: scroll 25s linear infinite;
+}
+
+
+
+@keyframes float {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-15px); }
+}
+
+.animate-float {
+  animation: float 4s ease-in-out infinite;
+}
+@keyframes scroll {
+  0% {
+    transform: translateX(0%);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
+}
+
+.animate-scroll {
+  display: flex;
+  width: max-content;
+  animation: scroll 20s linear infinite;
+}
+
+@keyframes scroll {
+  0% {
+    transform: translateX(0%);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
+}
+
+.animate-scroll {
+  width: max-content;
+  animation: scroll 25s linear infinite;
+}
+
+@keyframes scroll {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+
+.animate-scroll {
+  width: max-content;
+  animation: scroll 25s linear infinite;
+}
+
+.bg-noise {
+  background-blend-mode: overlay;
+}

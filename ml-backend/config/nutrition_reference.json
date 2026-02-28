@@ -1,0 +1,58 @@
+{
+    "source": "ICMR Dietary Guidelines for Indians (2020) + Harris-Benedict (Revised)",
+    "url": "https://www.icmr.gov.in/",
+    "bmr_formula": {
+        "male": "88.362 + (13.397 × W) + (4.799 × H) - (5.677 × A)",
+        "female": "447.593 + (9.247 × W) + (3.098 × H) - (4.330 × A)",
+        "where": "W = weight (kg), H = height (cm), A = age (years)"
+    },
+    "activity_factors": {
+        "sedentary": 1.2,
+        "light": 1.375,
+        "moderate": 1.55,
+        "active": 1.725,
+        "very_active": 1.9
+    },
+    "per_category": {
+        "under_weight": {
+            "calorie_adjustment_kcal": 400,
+            "protein_g_per_kg": 1.8,
+            "carbs_fraction": 0.55,
+            "fats_fraction": 0.25,
+            "fiber_g": 30,
+            "goal": "Weight gain — increase muscle & fat mass"
+        },
+        "normal": {
+            "calorie_adjustment_kcal": 0,
+            "protein_g_per_kg": 1.0,
+            "carbs_fraction": 0.50,
+            "fats_fraction": 0.30,
+            "fiber_g": 30,
+            "goal": "Maintenance — sustain current healthy weight"
+        },
+        "overweight": {
+            "calorie_adjustment_kcal": -400,
+            "protein_g_per_kg": 1.4,
+            "carbs_fraction": 0.40,
+            "fats_fraction": 0.30,
+            "fiber_g": 30,
+            "goal": "Moderate fat loss — preserve muscle"
+        },
+        "obese": {
+            "calorie_adjustment_kcal": -600,
+            "protein_g_per_kg": 1.6,
+            "carbs_fraction": 0.35,
+            "fats_fraction": 0.30,
+            "fiber_g": 30,
+            "goal": "Significant fat loss — protect lean mass"
+        },
+        "extremely_obese": {
+            "calorie_adjustment_kcal": -800,
+            "protein_g_per_kg": 1.6,
+            "carbs_fraction": 0.30,
+            "fats_fraction": 0.35,
+            "fiber_g": 30,
+            "goal": "Aggressive fat loss — preserve lean mass under supervision"
+        }
+    }
+}

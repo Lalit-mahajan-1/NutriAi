@@ -1,0 +1,42 @@
+{
+    "source": "WHO BMI Classification (2004)",
+    "url": "https://www.who.int/europe/news-room/fact-sheets/item/a-healthy-lifestyle---who-recommendations",
+    "note_asian": "South Asian / Indian population uses lower cutoffs: overweight ≥23, obese ≥27.5",
+    "categories": {
+        "under_weight": {
+            "who_label": "Underweight",
+            "bmi_min": null,
+            "bmi_max": 18.4,
+            "system_label": "Under Weight",
+            "description": "Below healthy weight; risk of nutritional deficiencies and reduced immunity"
+        },
+        "normal": {
+            "who_label": "Normal range",
+            "bmi_min": 18.5,
+            "bmi_max": 24.9,
+            "system_label": "Normal",
+            "description": "Healthy weight range associated with lowest health risks"
+        },
+        "overweight": {
+            "who_label": "Pre-obese",
+            "bmi_min": 25.0,
+            "bmi_max": 29.9,
+            "system_label": "Overweight",
+            "description": "Above healthy weight; increased risk of metabolic conditions"
+        },
+        "obese": {
+            "who_label": "Obese",
+            "bmi_min": 30.0,
+            "bmi_max": 34.9,
+            "system_label": "Obese",
+            "description": "Significantly above healthy weight; high risk of diabetes, CVD, etc."
+        },
+        "extremely_obese": {
+            "who_label": "Extremely Obese",
+            "bmi_min": 35.0,
+            "bmi_max": null,
+            "system_label": "Extremely Obese",
+            "description": "Severe health risk associated with extreme obesity"
+        }
+    }
+}

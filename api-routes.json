@@ -1,0 +1,280 @@
+{
+  "project": "NutriSight",
+  "generated_at": "2026-02-27T23:19:48+05:30",
+
+  "servers": {
+    "backend": {
+      "name": "Node.js / Express Backend",
+      "base_url": "http://localhost:5000",
+      "description": "Handles authentication, user profiles, and health check."
+    },
+    "ml_backend": {
+      "name": "FastAPI ML Backend",
+      "base_url": "http://localhost:8000",
+      "description": "Handles food nutrition lookup, body analysis, RL-based meal planning, preferences, and pricing."
+    }
+  },
+
+  "routes": {
+
+    "backend": [
+      {
+        "method": "GET",
+        "path": "/api/health",
+        "auth": false,
+        "summary": "Health check",
+        "description": "Returns { status: 'ok' } — used to verify the Node backend is running.",
+        "response_example": { "status": "ok", "message": "NutriSight API is running" }
+      },
+      {
+        "method": "POST",
+        "path": "/api/auth/signup",
+        "auth": false,
+        "summary": "Register a new user",
+        "description": "Creates a new user account. Accepts name, email, password (+ optional profile fields). Returns a JWT token on success.",
+        "body": {
+          "name": "string",
+          "email": "string",
+          "password": "string",
+          "height": "number (optional)",
+          "weight": "number (optional)",
+          "age": "number (optional)",
+          "gender": "string (optional)"
+        },
+        "response_example": { "token": "<jwt>", "user": { "_id": "...", "name": "..." } }
+      },
+      {
+        "method": "POST",
+        "path": "/api/auth/login",
+        "auth": false,
+        "summary": "Log in with email + password",
+        "description": "Validates credentials and returns a JWT token that must be sent as 'Authorization: Bearer <token>' on protected routes.",
+        "body": { "email": "string", "password": "string" },
+        "response_example": { "token": "<jwt>", "user": { "_id": "...", "name": "..." } }
+      },
+      {
+        "method": "GET",
+        "path": "/api/users/me",
+        "auth": true,
+        "summary": "Get current user profile",
+        "description": "Returns the full profile of the authenticated user (name, email, height, weight, age, gender). This is also called by the ML backend to build personalised meal plans.",
+        "response_example": {
+          "_id": "...",
+          "name": "Lalit",
+          "email": "lalit@example.com",
+          "height": 175,
+          "weight": 70,
+          "age": 23,
+          "gender": "male"
+        }
+      },
+      {
+        "method": "PUT",
+        "path": "/api/users/me",
+        "auth": true,
+        "summary": "Update current user profile",
+        "description": "Allows the authenticated user to update their profile fields (height, weight, age, gender, etc.).",
+        "body": {
+          "height": "number (optional)",
+          "weight": "number (optional)",
+          "age": "number (optional)",
+          "gender": "string (optional)"
+        },
+        "response_example": { "message": "Profile updated", "user": { "..." : "..." } }
+      },
+      {
+        "method": "GET",
+        "path": "/api/users/:userId",
+        "auth": true,
+        "summary": "Get a user by ID",
+        "description": "Returns the public profile of any user by their MongoDB _id. Requires authentication.",
+        "response_example": { "_id": "...", "name": "...", "email": "..." }
+      }
+    ],
+
+    "ml_backend": [
+      {
+        "method": "POST",
+        "path": "/api/analyze",
+        "auth": false,
+        "summary": "Food nutrition lookup (USDA)",
+        "description": "Looks up a food item in the USDA database and returns full macro + micronutrient data for the given weight in grams.",
+        "body": { "meal_name": "string", "weight_grams": "number" },
+        "response_example": {
+          "dish_name": "Brown Rice",
+          "calories_kcal": 215,
+          "protein_g": 4.5,
+          "carbs_g": 44.8,
+          "fats_g": 1.8
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/api/body-analyze",
+        "auth": false,
+        "summary": "BMI-based body type classification",
+        "description": "Given height, weight, age, gender, and activity level — calculates BMI, classifies body type (ectomorph/mesomorph/endomorph), and returns a complete daily nutrition plan.",
+        "body": {
+          "height_cm": "number",
+          "weight_kg": "number",
+          "age": "number",
+          "gender": "string (male|female)",
+          "activity_level": "string (sedentary|light|moderate|very_active|extra_active)"
+        },
+        "response_example": {
+          "bmi": 22.9,
+          "category": "mesomorph",
+          "nutrition_plan": { "calories": 2100, "protein_g": 105 }
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/api/camera-analyze",
+        "auth": false,
+        "summary": "Camera-based body classification (saves to MongoDB)",
+        "description": "Accepts body metrics + MediaPipe landmark ratios (waist_hip_ratio, shoulder_waist_ratio, torso_leg_ratio, body_aspect_ratio). Runs ML inference, saves the scan to body_scans collection in MongoDB, and returns the classification + nutrition plan.",
+        "body": {
+          "user_id": "string",
+          "height_cm": "number",
+          "weight_kg": "number",
+          "age": "number",
+          "gender": "string",
+          "activity_level": "string",
+          "waist_hip_ratio": "number",
+          "shoulder_waist_ratio": "number",
+          "torso_leg_ratio": "number",
+          "body_aspect_ratio": "number",
+          "pose_quality": "number (optional 0–1)"
+        },
+        "response_example": {
+          "scan_id": "<mongo_id>",
+          "bmi": 22.9,
+          "category": "mesomorph",
+          "confidence": 87.3,
+          "scanned_at": "2026-02-27T17:30:00Z",
+          "nutrition_plan": {}
+        }
+      },
+      {
+        "method": "GET",
+        "path": "/api/scan-history/{user_id}",
+        "auth": false,
+        "summary": "Fetch past body scans for a user",
+        "description": "Returns up to `limit` (default 10) most-recent camera scans for the given user_id. Each scan includes bmi, category, confidence, timestamp, and nutrition targets.",
+        "query_params": { "limit": "number (default: 10)" },
+        "response_example": { "scans": [{ "scan_id": "...", "bmi": 22.9, "category": "mesomorph" }], "count": 3 }
+      },
+      {
+        "method": "GET",
+        "path": "/api/meal-prices",
+        "auth": false,
+        "summary": "All dish prices from the nutrition dataset",
+        "description": "Returns a dictionary mapping every dish name to its price in INR, sourced from sample.csv. Also includes summary stats (avg, min, max). Used by the Budget page.",
+        "response_example": {
+          "prices": { "Idli Sambar": 45.0, "Rajma Chawal": 80.0 },
+          "count": 1014,
+          "avg_inr": 120.5,
+          "min_inr": 15.0,
+          "max_inr": 650.0
+        }
+      },
+      {
+        "method": "GET",
+        "path": "/api/weekly-plan",
+        "auth": true,
+        "summary": "RL-based personalised 7-day meal plan",
+        "description": "Fetches the user profile from the Node backend (/api/users/me), then runs the LinUCB bandit to generate a 7-day plan with breakfast, lunch, snack, and dinner for each day. Includes daily macro targets, price per meal, and fibre/water targets.",
+        "query_params": {
+          "goal": "weight_loss | maintenance | muscle_gain (default: maintenance)",
+          "activity_level": "sedentary | light | moderate | very_active | extra_active (default: moderate)",
+          "dietary_pref": "veg | non-veg (default: veg)"
+        },
+        "response_example": {
+          "days": [
+            {
+              "day": 1,
+              "meals": {
+                "breakfast": { "dish_name": "Idli Sambar", "calories_kcal": 230, "protein_g": 8.5, "price_inr": 45 }
+              }
+            }
+          ],
+          "daily_targets": {
+            "calories": 2100,
+            "protein_g": 105,
+            "carbs_g": 262,
+            "fats_g": 58,
+            "fiber_g": 29.4,
+            "water_ml": 2450
+          }
+        }
+      },
+      {
+        "method": "GET",
+        "path": "/api/preferences/{user_id}",
+        "auth": false,
+        "summary": "Get all liked meals for a user",
+        "description": "Returns every meal this user has liked, sorted newest first. Stored in the meal_preferences MongoDB collection.",
+        "response_example": {
+          "preferences": [{ "dish_name": "Paneer Sabzi", "calories_kcal": 280, "liked_at": "..." }],
+          "count": 5
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/api/preferences/like",
+        "auth": false,
+        "summary": "Like a meal (upsert)",
+        "description": "Records a 'like' for a dish. Uses (user_id + dish_name) as unique key — calling it twice for the same dish is idempotent. Also removes any existing dislike for the same dish.",
+        "body": {
+          "user_id": "string",
+          "dish_name": "string",
+          "calories_kcal": "number",
+          "protein_g": "number",
+          "carbs_g": "number",
+          "fats_g": "number",
+          "category": "string",
+          "veg_nonveg": "string"
+        },
+        "response_example": { "message": "Meal liked", "dish_name": "Idli Sambar" }
+      },
+      {
+        "method": "DELETE",
+        "path": "/api/preferences/unlike",
+        "auth": false,
+        "summary": "Remove a like for a meal",
+        "description": "Deletes the like record for a (user_id, dish_name) pair. Returns 404 if no like existed.",
+        "body": { "user_id": "string", "dish_name": "string" },
+        "response_example": { "message": "Meal unliked", "dish_name": "Idli Sambar" }
+      },
+      {
+        "method": "POST",
+        "path": "/api/preferences/dislike",
+        "auth": false,
+        "summary": "Dislike a meal (trains the RL model)",
+        "description": "Records a dislike in the meal_dislikes collection AND sends a -1 feedback signal to the in-memory LinUCB bandit — so the model will avoid recommending this dish in future plans for this user. Also removes any existing like.",
+        "body": {
+          "user_id": "string",
+          "dish_name": "string",
+          "calories_kcal": "number",
+          "protein_g": "number",
+          "carbs_g": "number",
+          "fats_g": "number",
+          "category": "string",
+          "veg_nonveg": "string"
+        },
+        "response_example": { "message": "Meal disliked", "dish_name": "Instant Coffee" }
+      },
+      {
+        "method": "GET",
+        "path": "/api/preferences/dislikes/{user_id}",
+        "auth": false,
+        "summary": "Get all disliked meals for a user",
+        "description": "Returns every dish this user has disliked, sorted newest first. Used on the frontend to pre-populate reaction states.",
+        "response_example": {
+          "dislikes": [{ "dish_name": "Instant Coffee", "disliked_at": "..." }],
+          "count": 2
+        }
+      }
+    ]
+  }
+}

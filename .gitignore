@@ -1,0 +1,68 @@
+# Dependencies
+node_modules/
+.pnp/
+.pnp.js
+
+# Build output
+dist/
+dist-ssr/
+
+# Vite cache
+.vite/
+
+# Env files (keep an example file if you use one)
+.env
+.env.*
+!.env.example
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Testing / coverage
+coverage/
+.nyc_output/
+
+# TypeScript
+*.tsbuildinfo
+
+# Editor / OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+*.swp
+*.swo
+*.swn
+
+# Misc
+*.local
+
+# ======================
+# Python / ML Backend
+# ======================
+
+# Virtual environments
+venv/
+venv*/
+ml-backend/venv311/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Jupyter
+.ipynb_checkpoints/
+
+# FastAPI / Uvicorn
+*.sqlite3
+
+# Python env files
+.env.python
