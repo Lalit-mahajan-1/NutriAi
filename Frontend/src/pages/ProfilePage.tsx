@@ -63,15 +63,30 @@ export default function ProfilePage() {
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!form.name.trim()) return setError("Name is required.");
+
+    const ageNum = Number(form.age);
+    const heightNum = Number(form.height);
+    const weightNum = Number(form.weight);
+
+    if (!Number.isFinite(ageNum) || ageNum <= 5) {
+      return setError("Age must be greater than 5.");
+    }
+    if (!Number.isFinite(weightNum) || weightNum <= 30) {
+      return setError("Weight must be greater than 30 kg.");
+    }
+    if (!Number.isFinite(heightNum) || heightNum <= 70) {
+      return setError("Height must be greater than 70 cm.");
+    }
+
     setSaving(true);
     setError("");
     try {
       await updateUser({
         name:          form.name.trim(),
-        age:           form.age    ? Number(form.age)    : null as any,
+        age:           ageNum,
         gender:        (form.gender   || null) as any,
-        height:        form.height ? Number(form.height) : null as any,
-        weight:        form.weight ? Number(form.weight) : null as any,
+        height:        heightNum,
+        weight:        weightNum,
         activityLevel: (form.activityLevel || null) as any,
       });
       setSuccess(true);
@@ -253,7 +268,7 @@ export default function ProfilePage() {
                 <input
                   className="pf-input"
                   type="number"
-                  min={1} max={120}
+                  min={6} max={120}
                   value={form.age}
                   onChange={e => handleChange("age", e.target.value)}
                   placeholder="e.g. 21"
@@ -264,7 +279,7 @@ export default function ProfilePage() {
                 <input
                   className="pf-input"
                   type="number"
-                  min={50} max={300}
+                  min={71} max={300}
                   value={form.height}
                   onChange={e => handleChange("height", e.target.value)}
                   placeholder="e.g. 170"
@@ -278,7 +293,7 @@ export default function ProfilePage() {
               <input
                 className="pf-input"
                 type="number"
-                min={10} max={500}
+                min={31} max={500}
                 step="0.1"
                 value={form.weight}
                 onChange={e => handleChange("weight", e.target.value)}

@@ -7,9 +7,11 @@ const links = [
   { to: "/how-it-works", label: "How It Works" },
   { to: "/meal-plans",   label: "Meal Plans"   },
   { to: "/budget",       label: "Budget"       },
-  { to: "/health",       label: "Health"       },
-  { to: "/dashboard",   label: "Dashboard"    },
+  // { to: "/health",       label: "Health"       },
+  // { to: "/dashboard",   label: "Dashboard"    },
+   { to: "/meal-photo",        label: "Scan your meal"        },
   { to: "/about",        label: "About"        },
+ 
 ];
 
 const Navbar = () => {

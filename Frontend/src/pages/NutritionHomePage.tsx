@@ -7,7 +7,7 @@
  */
 
 import { useState, useEffect, useCallback } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { mlApi, BodyAnalysis, MealNutrition } from "@/lib/api";
 import CameraSection from "@/components/CameraSection";
@@ -76,6 +76,8 @@ const NutrRow = ({ label, value }: { label: string; value: string }) => (
 export default function NutritionHomePage() {
   const { user, profile } = useAuth();
   const navigate = useNavigate();
+  const { userId: routeUserId } = useParams<{ userId: string }>();
+  const resolvedUserId = user?._id ?? routeUserId ?? "";
 
   const [bodyData,   setBodyData]   = useState<BodyAnalysis | null>(null);
   const [bodyError,  setBodyError]  = useState("");
@@ -136,6 +138,13 @@ export default function NutritionHomePage() {
 
   const profileIncomplete = !profile?.height || !profile?.weight || !profile?.age || !profile?.gender;
 
+  // Keep /home/:userId URL in sync with the authenticated user id.
+  useEffect(() => {
+    if (user?._id && routeUserId && routeUserId !== user._id) {
+      navigate(`/home/${user._id}`, { replace: true });
+    }
+  }, [user, routeUserId, navigate]);
+
   return (
     <div style={{
       minHeight: "100vh",
@@ -194,7 +203,7 @@ export default function NutritionHomePage() {
               </p>
             </div>
             <button
-              onClick={() => user?._id && navigate(`/profile/${user._id}`)}
+              onClick={() => resolvedUserId && navigate(`/profile/${resolvedUserId}`)}
               style={{
                 background:"rgba(255,255,255,.2)", border:"1px solid rgba(255,255,255,.35)",
                 borderRadius:14, padding:"10px 18px",
@@ -224,7 +233,7 @@ export default function NutritionHomePage() {
             <div>
               <strong>Complete your profile</strong> to unlock your personalized body analysis & nutrition plan.{" "}
               <button
-                onClick={() => user?._id && navigate(`/profile/${user._id}`)}
+                onClick={() => resolvedUserId && navigate(`/profile/${resolvedUserId}`)}
                 style={{ background:"none", border:"none", color:"#E8734A", fontWeight:700, cursor:"pointer", fontFamily:"'DM Sans',sans-serif", fontSize:13, textDecoration:"underline" }}
               >
                 Add height, weight, age & gender →
@@ -341,7 +350,7 @@ export default function NutritionHomePage() {
         {/* ── CAMERA LIVE TRACKING ─────────────────────── */}
         <div style={{ marginTop: 20 }}>
           <CameraSection
-            userId={user?._id ?? ""}
+            userId={resolvedUserId}
             profile={profile}
             activityLevel={profile?.activityLevel ?? "moderate"}
             onResult={(res) => {

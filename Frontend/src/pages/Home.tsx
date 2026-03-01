@@ -13,41 +13,104 @@
 import { Link, useNavigate } from "react-router-dom";
 import { useEffect, useRef, useState, useCallback } from "react";
 import rajma            from "@/assets/rajma.jpg";
-import paneer           from "@/assets/paneer.jpg";
+// import paneer           from "@/assets/paneer.jpg";
 import egg              from "@/assets/egg.jpg";
 import dal              from "@/assets/dal.jpg";
 import illNutrition     from "@/assets/ill-nutrition.png";
 import illBudget        from "@/assets/ill-budget.png";
 import illSmartPlanning from "@/assets/ill-smart-planning.png";
-
+import sandwich  from "@/assets/veg_sandwich.jpg";
+import dhokala from "@/assets/dhokala.jpg";
+import makhana    from "@/assets/makhana.jpg";
+import paneer    from "@/assets/panner_paratha.jpg";
 /* ─── Junk ↔ Healthy pairs ─── */
+
+
+
+
+ /* ─── Junk ↔ Healthy pairs ─── */
 const pairs = [
   {
-    junk:    { name:"Burger",   cal:"650 kcal", emoji:"🍔", image:"https://images.unsplash.com/photo-1568901346375-23c9450c58cd?w=600&q=80" },
-    healthy: { name:"Rajma Chawal",  cal:"480 kcal", protein:"18g", price:"₹40", tag:"High Protein", image:rajma  },
+    junk: {
+      name: "Burger",
+      cal: "295 kcal",
+      protein: "12g",
+      emoji: "🍔",
+      image: "https://images.unsplash.com/photo-1568901346375-23c9450c58cd?w=600&q=80"
+    },
+    healthy: {
+      name: "Brown Bread Veg Sandwich",
+      cal: "220 kcal",
+      protein: "9g",
+      price: "₹40",
+      tag: "Lighter Swap",
+      image: sandwich
+    },
   },
   {
-    junk:    { name:"Samosa",   cal:"400 kcal", emoji:"🥟", image:"https://images.unsplash.com/photo-1601050690597-df0568f70950?w=600&q=80" },
-    healthy: { name:"Paneer Bhurji", cal:"390 kcal", protein:"22g", price:"₹60", tag:"Vegetarian",  image:paneer },
+    junk: {
+      name: "Samosa",
+      cal: "260 kcal",
+      protein: "4g",
+      emoji: "🥟",
+      image: "https://images.unsplash.com/photo-1601050690597-df0568f70950?w=600&q=80"
+    },
+    healthy: {
+      name: "Dhokla (100g)",
+      cal: "160 kcal",
+      protein: "6g",
+      price: "₹30",
+      tag: "Low Oil",
+      image: dhokala
+    },
   },
   {
-    junk:    { name:"Vada Pav", cal:"320 kcal", emoji:"🫓", image:"https://images.unsplash.com/photo-1606491956689-2ea866880c84?w=600&q=80" },
-    healthy: { name:"Egg Curry",     cal:"320 kcal", protein:"26g", price:"₹45", tag:"Best Value",  image:egg    },
+    junk: {
+      name: "French Fries (Medium)",
+      cal: "365 kcal",
+      protein: "4g",
+      emoji: "🍟",
+      image: "https://images.unsplash.com/photo-1630431341973-02e1b662ec35?q=80&w=3087&auto=format&fit=crop&ixlib=rb-4.1.0&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D"
+    },
+    healthy: {
+      name: "Roasted Makhana (30g)",
+      cal: "120 kcal",
+      protein: "4g",
+      price: "₹25",
+      tag: "Low Cal",
+      image: makhana
+    },
   },
   {
-    junk:    { name:"Pizza",    cal:"800 kcal", emoji:"🍕", image:"https://images.unsplash.com/photo-1513104890138-7c749659a591?w=600&q=80" },
-    healthy: { name:"Dal Rice",      cal:"410 kcal", protein:"14g", price:"₹30", tag:"Budget Pick", image:dal    },
+    junk: {
+      name: "Cheese Pizza (1 slice)",
+      cal: "285 kcal",
+      protein: "12g",
+      emoji: "🍕",
+      image: "https://images.unsplash.com/photo-1513104890138-7c749659a591?w=600&q=80"
+    },
+    healthy: {
+      name: "Paneer Paratha (1 medium)",
+      cal: "320 kcal",
+      protein: "11g",
+      price: "₹30",
+      tag: "More Protein",
+      image: paneer
+    },
   },
 ];
+
 
 const healthyMeals = pairs.map(p => p.healthy);
 
 const NAV_LINKS = [
   { label:"How It Works", href:"/how-it-works" },
   { label:"Meal Plans",   href:"/meal-plans"   },
+  
   { label:"Budget",       href:"/budget"       },
-  { label:"Health",       href:"/health"       },
-  { label:"Dashboard",    href:"/dashboard"    },
+  // { label:"Health",       href:"/health"       },
+  // { label:"Dashboard",    href:"/dashboard"    },
+  { label:"Scan Your Meal",        href:"/meal-photo"        },
   { label:"About",        href:"/about"        },
 ];
 
@@ -345,7 +408,7 @@ export default function Index() {
           {NAV_LINKS.map(({ label, href }) => <Link key={label} to={href} className="navLink">{label}</Link>)}
         </div>
         <div style={{ display:"flex",alignItems:"center",gap:10 }}>
-          <Link to="/login" className="btnPrimary" style={{ padding:"10px 22px",fontSize:14 }}>Get Started</Link>
+          {/* <Link to="/login" className="btnPrimary" style={{ padding:"10px 22px",fontSize:14 }}>Get Started</Link> */}
           <button className="hamburger" onClick={() => setMenuOpen(o=>!o)}
             style={{ background:"none",border:"none",cursor:"pointer",display:"flex",flexDirection:"column",gap:5,padding:6 }} aria-label="Menu">
             {[0,1,2].map(i=>(
@@ -413,7 +476,7 @@ export default function Index() {
               ))}
             </div>
             <div className="heroBtns" style={{ display:"flex",gap:14 }}>
-              <Link to="/login" className="btnWhite">Get My Meal Plan →</Link>
+              {/* <Link to="/login" className="btnWhite">Get My Meal Plan →</Link> */}
               <button onClick={goToMeals} className="btnGhost">View Menu</button>
             </div>
           </div>

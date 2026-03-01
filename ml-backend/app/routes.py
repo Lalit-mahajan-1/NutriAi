@@ -9,8 +9,9 @@ NutriSight ML API routes.
 """
 
 import os
+import logging
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, Any, Dict
 
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
@@ -36,9 +37,40 @@ from recommender.meal_recommender import MealRecommender
 
 router = APIRouter()
 nutrition_calc = NutritionCalculator()
+logger = logging.getLogger(__name__)
 
 # ── User service config ─────────────────────────────────────────────────────
 USER_SERVICE_BASE_URL = "http://localhost:5000"
+
+
+async def fetch_user_profile_from_node(authorization: Optional[str]) -> dict:
+    """
+    Fetch current user profile from Node backend (/api/users/me).
+    Requires a Bearer token in Authorization header.
+    """
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Authorization header is required to fetch user profile.")
+
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"{USER_SERVICE_BASE_URL}/api/users/me",
+                headers={"Authorization": authorization},
+                timeout=8.0,
+            )
+    except httpx.ReadTimeout:
+        raise HTTPException(status_code=504, detail="User service timed out while fetching profile.")
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"User service error: {exc}")
+
+    if resp.status_code != 200:
+        raise HTTPException(
+            status_code=resp.status_code,
+            detail=f"Failed to fetch user profile: {resp.text}",
+        )
+
+    return resp.json()
+
 
 # ── Load food dataset & init bandit + recommender ──────────────────────────
 # Resolve path relative to ml-backend root so it works regardless of cwd
@@ -68,23 +100,64 @@ async def analyze(req: MealRequest):
     return await get_nutrition(req.meal_name, req.weight_grams)
 
 
+class MealDetectionResultRequest(BaseModel):
+    user_id: str
+    meal_type: Optional[str] = None
+    jwt_token: Optional[str] = None
+    analysis: Dict[str, Any] = {}
+    daily_targets: Optional[Dict[str, Any]] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+
+@router.post("/meal/detection-result")
+async def meal_detection_result(req: MealDetectionResultRequest):
+    """
+    n8n callback endpoint for posting finalized meal detection/nutrition output.
+    """
+    return {
+        "success": True,
+        "message": "Meal detection result received",
+        "received_for_user": req.user_id,
+        "meal_type": req.meal_type,
+        "analysis_keys": list(req.analysis.keys()),
+    }
+
+
 # ── Body Analysis (BMI-estimated ratios) ───────────────────────────────────
 class BodyRequest(BaseModel):
-    height_cm: float
-    weight_kg: float
-    age: int
-    gender: str
-    activity_level: str = "moderate"
+    height_cm: Optional[float] = None
+    weight_kg: Optional[float] = None
+    age: Optional[int] = None
+    gender: Optional[str] = None
+    activity_level: Optional[str] = "moderate"
 
 
 @router.post("/body-analyze")
-async def body_analyze(req: BodyRequest):
+@router.post("/body-analysis")
+async def body_analyze(req: BodyRequest, authorization: Optional[str] = Header(default=None)):
+    user = await fetch_user_profile_from_node(authorization) if authorization else {}
+
+    height_cm = req.height_cm if req.height_cm is not None else user.get("height")
+    weight_kg = req.weight_kg if req.weight_kg is not None else user.get("weight")
+    age = req.age if req.age is not None else user.get("age")
+    gender = req.gender if req.gender is not None else user.get("gender")
+    activity_level = req.activity_level or user.get("activityLevel") or "moderate"
+
+    if height_cm is None or weight_kg is None or age is None or gender is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Missing profile fields. Provide height_cm, weight_kg, age, gender or send Authorization for Node profile fetch.",
+        )
+
+    g = str(gender).lower()
+    normalized_gender = "female" if g == "female" else "male"
+
     return analyze_body(
-        height_cm=req.height_cm,
-        weight_kg=req.weight_kg,
-        age=req.age,
-        gender=req.gender,
-        activity_level=req.activity_level,
+        height_cm=float(height_cm),
+        weight_kg=float(weight_kg),
+        age=int(age),
+        gender=normalized_gender,
+        activity_level=str(activity_level),
     )
 
 
@@ -109,30 +182,60 @@ class CameraAnalyzeRequest(BaseModel):
 
 @router.post("/camera-analyze")
 async def camera_analyze(req: CameraAnalyzeRequest):
-    if not MODELS_LOADED:
-        return {"error": "ML models not loaded. Run training first."}
-
-    # ── ML inference ──────────────────────────────────────────────────────
+    """
+    Use MediaPipe landmark features + trained model when available,
+    otherwise fall back to a BMI-based heuristic.
+    Also persists the scan to MongoDB.
+    """
     height_m = req.height_cm / 100
     bmi = req.weight_kg / (height_m ** 2)
-    gender_encoded = 1 if req.gender.lower() == "male" else 0
+    gender_encoded = 1 if str(req.gender).lower() == "male" else 0
 
-    features = np.array([[
-        round(float(bmi), 2),
-        req.waist_hip_ratio,
-        req.shoulder_waist_ratio,
-        req.torso_leg_ratio,
-        req.body_aspect_ratio,
-        req.age,
-        gender_encoded,
-    ]])
+    # Default BMI-based fallback
+    if bmi < 18.5:
+        category = "under_weight"
+    elif bmi < 25:
+        category = "normal"
+    elif bmi < 30:
+        category = "overweight"
+    elif bmi < 35:
+        category = "obese"
+    else:
+        category = "extremely_obese"
 
-    features_scaled = scaler.transform(features)
-    prediction      = body_classifier.predict(features_scaled)[0]
-    probabilities   = body_classifier.predict_proba(features_scaled)[0]
-    category        = label_encoder.inverse_transform([prediction])[0]
-    confidence      = float(probabilities[prediction])
+    confidence = 0.65
+    inference_mode = "bmi_heuristic_fallback"
+    inference_error: Optional[str] = None
 
+    # Try trained model if loaded
+    if MODELS_LOADED:
+        try:
+            features = np.array(
+                [[
+                    round(float(bmi), 2),
+                    req.waist_hip_ratio,
+                    req.shoulder_waist_ratio,
+                    req.torso_leg_ratio,
+                    req.body_aspect_ratio,
+                    req.age,
+                    gender_encoded,
+                ]]
+            )
+
+            features_scaled = scaler.transform(features)
+            prediction = body_classifier.predict(features_scaled)[0]
+            probabilities = body_classifier.predict_proba(features_scaled)[0]
+
+            category = label_encoder.inverse_transform([prediction])[0]
+            confidence = float(probabilities[prediction])
+            inference_mode = "trained_model"
+
+        except Exception as exc:
+            logger.exception("Camera analyze model inference failed")
+            inference_error = str(exc)
+            # BMI heuristic result kept as fallback
+
+    # Build nutrition plan regardless of mode
     nutrition = nutrition_calc.get_complete_nutrition_plan(
         weight_kg=req.weight_kg,
         height_cm=req.height_cm,
@@ -142,50 +245,65 @@ async def camera_analyze(req: CameraAnalyzeRequest):
         activity_level=req.activity_level,
     )
 
-    result_bmi        = round(float(bmi), 1)
+    result_bmi = round(float(bmi), 1)
     result_confidence = round(confidence * 100, 1)
 
-    # ── Persist to MongoDB (body_scans collection) ─────────────────────────
     scan_doc = {
-        "user_id":      req.user_id,
-        "scanned_at":   datetime.now(timezone.utc),   # UTC timestamp
-        "source":       "camera",
-        "bmi":          result_bmi,
-        "category":     category,
-        "confidence":   result_confidence,
+        "user_id": req.user_id,
+        "scanned_at": datetime.now(timezone.utc),
+        "source": "camera",
+        "bmi": result_bmi,
+        "category": category,
+        "confidence": result_confidence,
         "pose_quality": req.pose_quality,
-        # Snapshot of inputs
         "inputs": {
-            "height_cm":      req.height_cm,
-            "weight_kg":      req.weight_kg,
-            "age":            req.age,
-            "gender":         req.gender,
+            "height_cm": req.height_cm,
+            "weight_kg": req.weight_kg,
+            "age": req.age,
+            "gender": req.gender,
             "activity_level": req.activity_level,
         },
-        # Full nutrition plan from the model
         "nutrition_plan": nutrition,
-        # Raw landmark features for future reference
         "landmark_features": {
-            "waist_hip_ratio":      req.waist_hip_ratio,
+            "waist_hip_ratio": req.waist_hip_ratio,
             "shoulder_waist_ratio": req.shoulder_waist_ratio,
-            "torso_leg_ratio":      req.torso_leg_ratio,
-            "body_aspect_ratio":    req.body_aspect_ratio,
+            "torso_leg_ratio": req.torso_leg_ratio,
+            "body_aspect_ratio": req.body_aspect_ratio,
+        },
+        "inference": {
+            "mode": inference_mode,
+            "models_loaded": MODELS_LOADED,
+            "raw_bmi": bmi,
         },
     }
 
-    scans = get_scans_collection()
-    insert_result = await scans.insert_one(scan_doc)
-    scan_id = str(insert_result.inserted_id)
+    # Persist to MongoDB
+    scan_id: Optional[str] = None
+    persisted = False
+    persistence_error: Optional[str] = None
+    try:
+        scans = get_scans_collection()
+        insert_result = await scans.insert_one(scan_doc)
+        scan_id = str(insert_result.inserted_id)
+        persisted = True
+    except Exception as exc:
+        logger.exception("Failed to persist camera scan to MongoDB")
+        persistence_error = str(exc)
 
     return {
-        "scan_id":        scan_id,
-        "bmi":            result_bmi,
-        "category":       category,
-        "confidence":     result_confidence,
-        "pose_quality":   req.pose_quality,
-        "source":         "camera",
-        "scanned_at":     scan_doc["scanned_at"].isoformat(),
+        "scan_id": scan_id,
+        "bmi": result_bmi,
+        "category": category,
+        "confidence": result_confidence,
+        "pose_quality": req.pose_quality,
+        "source": "camera",
+        "scanned_at": scan_doc["scanned_at"].isoformat(),
         "nutrition_plan": nutrition,
+        "inference_mode": inference_mode,
+        "inference_error": inference_error,
+        "models_loaded": MODELS_LOADED,
+        "persisted": persisted,
+        "persistence_error": persistence_error,
     }
 
 
@@ -197,27 +315,39 @@ async def scan_history(user_id: str, limit: int = 10):
     newest first, with lightweight fields for the timeline view.
     """
     scans = get_scans_collection()
-    cursor = scans.find(
-        {"user_id": user_id},
-        {
-            "_id":         1,
-            "scanned_at":  1,
-            "bmi":         1,
-            "category":    1,
-            "confidence":  1,
-            "pose_quality": 1,
-            "inputs":      1,
-            "nutrition_plan.daily_targets": 1,
-        },
-    ).sort("scanned_at", -1).limit(limit)
+    try:
+        cursor = (
+            scans.find(
+                {"user_id": user_id},
+                {
+                    "_id": 1,
+                    "scanned_at": 1,
+                    "bmi": 1,
+                    "category": 1,
+                    "confidence": 1,
+                    "pose_quality": 1,
+                    "inputs": 1,
+                    "nutrition_plan.daily_targets": 1,
+                },
+            )
+            .sort("scanned_at", -1)
+            .limit(limit)
+        )
 
-    docs = []
-    async for doc in cursor:
-        doc["scan_id"] = str(doc.pop("_id"))
-        doc["scanned_at"] = doc["scanned_at"].isoformat()
-        docs.append(doc)
+        docs = []
+        async for doc in cursor:
+            doc["scan_id"] = str(doc.pop("_id"))
+            if "scanned_at" in doc and hasattr(doc["scanned_at"], "isoformat"):
+                doc["scanned_at"] = doc["scanned_at"].isoformat()
+            docs.append(doc)
 
-    return {"scans": docs, "count": len(docs)}
+        return {"scans": docs, "count": len(docs)}
+    except Exception as exc:
+        logger.exception("Failed to fetch scan history from MongoDB")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Database error while fetching scan history: {exc}",
+        )
 
 
 # ── Meal Price Lookup ────────────────────────────────────────────────────────
@@ -279,57 +409,40 @@ async def weekly_plan(
     """
 
     # ── 1) Resolve profile ────────────────────────────────────────────────
-    if height is not None and weight is not None and age is not None and gender is not None:
-        # Fast path: all profile fields provided directly by the frontend
-        resolved_user_id = user_id or "anonymous"
-        height_cm  = float(height)
-        weight_kg  = float(weight)
-        resolved_age    = int(age)
-        raw_gender = gender.lower()
-        resolved_gender: str = "male" if raw_gender not in ("male", "female") else raw_gender
+    resolved_user_id = user_id or "anonymous"
+    height_cm: Optional[float] = height
+    weight_kg: Optional[float] = weight
+    resolved_age: Optional[int] = age
+    resolved_gender: Optional[str] = gender.lower() if isinstance(gender, str) else None
 
-    else:
-        # Fallback defaults if user-service is unavailable or returns non-200.
-        resolved_user_id = user_id or "anonymous"
+    if authorization:
+        node_user = await fetch_user_profile_from_node(authorization)
+        resolved_user_id = str(node_user.get("_id", resolved_user_id))
+
+        if height_cm is None:
+            height_cm = node_user.get("height")
+        if weight_kg is None:
+            weight_kg = node_user.get("weight")
+        if resolved_age is None:
+            resolved_age = node_user.get("age")
+        if resolved_gender is None:
+            node_gender = str(node_user.get("gender") or "").lower()
+            resolved_gender = node_gender if node_gender in ("male", "female") else "male"
+
+        node_activity = str(node_user.get("activityLevel") or "").lower()
+        if node_activity in ("sedentary", "light", "moderate", "very_active", "extra_active"):
+            activity_level = node_activity
+        elif node_activity == "active":
+            activity_level = "very_active"
+
+    if height_cm is None:
         height_cm = 170.0
+    if weight_kg is None:
         weight_kg = 70.0
+    if resolved_age is None:
         resolved_age = 25
+    if resolved_gender not in ("male", "female"):
         resolved_gender = "male"
-
-        headers: dict = {}
-        if authorization:
-            headers["Authorization"] = authorization
-
-        resp = None
-        try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.get(
-                    f"{USER_SERVICE_BASE_URL}/api/users/me",
-                    headers=headers,
-                    timeout=8.0,
-                )
-        except Exception:
-            resp = None
-
-        if resp is not None and resp.status_code == 200:
-            user = resp.json()
-            resolved_user_id = str(user.get("_id", resolved_user_id))
-
-            try:
-                height_cm = float(user.get("height") or height_cm)
-            except Exception:
-                pass
-            try:
-                weight_kg = float(user.get("weight") or weight_kg)
-            except Exception:
-                pass
-            try:
-                resolved_age = int(user.get("age") or resolved_age)
-            except Exception:
-                pass
-
-            raw_gender = (user.get("gender") or resolved_gender).lower()
-            resolved_gender = "male" if raw_gender not in ("male", "female") else raw_gender
 
     # ── 2) Validate enums ────────────────────────────────────────────────
     if goal not in ("weight_loss", "maintenance", "muscle_gain"):
@@ -566,3 +679,198 @@ async def get_dislikes(user_id: str):
     async for doc in cursor:
         docs.append(doc)
     return {"dislikes": docs, "count": len(docs)}
+
+
+# ── Budget management & analysis ─────────────────────────────────────────────
+class BudgetModel(BaseModel):
+    monthly_budget: float
+    current_monthly_spend: float = 0.0
+
+
+def get_budget_collection():
+    from app.database import get_db
+    return get_db()["user_budgets"]
+
+
+@router.get("/budget/{user_id}")
+async def get_budget(user_id: str):
+    col = get_budget_collection()
+    doc = await col.find_one({"user_id": user_id})
+    if not doc:
+        return {"budget": None}
+    doc.pop("_id", None)
+    if "updated_at" in doc and hasattr(doc["updated_at"], "isoformat"):
+        doc["updated_at"] = doc["updated_at"].isoformat()
+    return {"budget": doc}
+
+
+@router.post("/budget/{user_id}")
+async def save_budget(user_id: str, data: BudgetModel):
+    col = get_budget_collection()
+    doc = {
+        "user_id": user_id,
+        "monthly_budget": float(data.monthly_budget),
+        "current_monthly_spend": float(data.current_monthly_spend),
+        "updated_at": datetime.now(timezone.utc),
+    }
+    await col.update_one({"user_id": user_id}, {"$set": doc}, upsert=True)
+    doc["updated_at"] = doc["updated_at"].isoformat()
+    return {"success": True, "budget": doc}
+
+
+@router.delete("/budget/{user_id}")
+async def delete_budget(user_id: str):
+    col = get_budget_collection()
+    result = await col.delete_one({"user_id": user_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Budget not found.")
+    return {"success": True, "message": "Budget deleted"}
+
+
+@router.get("/budget-analysis/{user_id}")
+async def budget_analysis(
+    user_id: str,
+    goal: str = "maintenance",
+    dietary_pref: str = "veg",
+    activity_level: str = "moderate",
+    authorization: Optional[str] = Header(default=None),
+):
+    """
+    Build complete budget analysis using:
+    - persisted budget from MongoDB user_budgets
+    - on-the-fly weekly plan from recommender (Node profile if auth available)
+    """
+    # Resolve profile using Node backend when auth is available.
+    height_cm = 170.0
+    weight_kg = 70.0
+    age = 25
+    gender = "male"
+
+    if authorization:
+        node_user = await fetch_user_profile_from_node(authorization)
+        user_id = str(node_user.get("_id", user_id))
+        height_cm = float(node_user.get("height") or height_cm)
+        weight_kg = float(node_user.get("weight") or weight_kg)
+        age = int(node_user.get("age") or age)
+        raw_gender = str(node_user.get("gender") or "male").lower()
+        gender = "female" if raw_gender == "female" else "male"
+
+        node_activity = str(node_user.get("activityLevel") or "").lower()
+        if node_activity == "active":
+            node_activity = "very_active"
+        if node_activity in ("sedentary", "light", "moderate", "very_active", "extra_active"):
+            activity_level = node_activity
+
+    if goal not in ("weight_loss", "maintenance", "muscle_gain"):
+        goal = "maintenance"
+    if activity_level not in ("sedentary", "light", "moderate", "very_active", "extra_active"):
+        activity_level = "moderate"
+    dietary_pref = "veg" if dietary_pref.lower() == "veg" else "non-veg"
+
+    profile = UserProfile(
+        user_id=user_id,
+        height_cm=height_cm,
+        weight_kg=weight_kg,
+        age=age,
+        gender=gender,                  # type: ignore[arg-type]
+        activity_level=activity_level,  # type: ignore[arg-type]
+        goal=goal,                      # type: ignore[arg-type]
+        dietary_pref=dietary_pref,      # type: ignore[arg-type]
+        allergies=None,
+    )
+    plan = meal_recommender.generate_weekly_plan(profile)
+
+    budget_col = get_budget_collection()
+    budget_doc = await budget_col.find_one({"user_id": user_id})
+
+    weekly_cost = 0.0
+    daily_costs = []
+    category_costs = {"breakfast": 0.0, "lunch": 0.0, "snack": 0.0, "dinner": 0.0}
+    meal_details = []
+    total_calories = 0.0
+    total_protein = 0.0
+    total_carbs = 0.0
+    total_fats = 0.0
+
+    for day in plan.get("days", []):
+        day_cost = 0.0
+        meals = day.get("meals", {})
+        for meal_type in ("breakfast", "lunch", "snack", "dinner"):
+            meal = meals.get(meal_type)
+            if not meal:
+                continue
+            price = float(meal.get("price_inr", 0) or 0)
+            cals = float(meal.get("calories_kcal", 0) or 0)
+            prot = float(meal.get("protein_g", 0) or 0)
+            carbs = float(meal.get("carbs_g", 0) or 0)
+            fats = float(meal.get("fats_g", 0) or 0)
+
+            day_cost += price
+            category_costs[meal_type] += price
+            total_calories += cals
+            total_protein += prot
+            total_carbs += carbs
+            total_fats += fats
+
+            meal_details.append({
+                "date": day.get("date", ""),
+                "day_index": day.get("day", day.get("day_index", 0)),
+                "meal_type": meal_type,
+                "dish_name": meal.get("dish_name", ""),
+                "price_inr": price,
+                "calories_kcal": cals,
+                "protein_g": prot,
+                "carbs_g": carbs,
+                "fats_g": fats,
+                "veg_nonveg": meal.get("veg_nonveg", ""),
+            })
+
+        daily_costs.append({
+            "date": day.get("date", ""),
+            "day_index": day.get("day", day.get("day_index", 0)),
+            "cost": round(day_cost, 2),
+        })
+        weekly_cost += day_cost
+
+    monthly_ai_cost = round(weekly_cost * 4.33, 2)
+    monthly_budget = float(budget_doc.get("monthly_budget", 0)) if budget_doc else 0.0
+    current_spend = float(budget_doc.get("current_monthly_spend", 0)) if budget_doc else 0.0
+    savings_vs_current = round(current_spend - monthly_ai_cost, 2) if current_spend > 0 else 0.0
+    savings_vs_budget = round(monthly_budget - monthly_ai_cost, 2) if monthly_budget > 0 else 0.0
+    daily_avg = round(monthly_ai_cost / 30, 2) if monthly_ai_cost > 0 else 0.0
+    cost_per_100kcal = round(weekly_cost / max(total_calories / 100, 1), 2) if weekly_cost else 0
+    cost_per_g_protein = round(weekly_cost / max(total_protein, 1), 2) if weekly_cost else 0
+
+    if meal_details:
+        sorted_meals = sorted(meal_details, key=lambda x: x["price_inr"])
+        cheapest = sorted_meals[:5]
+        most_expensive = sorted_meals[-5:][::-1]
+    else:
+        cheapest = []
+        most_expensive = []
+
+    return {
+        "monthly_budget": monthly_budget,
+        "current_monthly_spend": current_spend,
+        "weekly_ai_cost": round(weekly_cost, 2),
+        "monthly_ai_cost": monthly_ai_cost,
+        "daily_average": daily_avg,
+        "savings_vs_current": savings_vs_current,
+        "savings_vs_budget": savings_vs_budget,
+        "savings_percentage": round((savings_vs_current / current_spend) * 100, 1) if current_spend > 0 else 0,
+        "budget_utilization": round((monthly_ai_cost / monthly_budget) * 100, 1) if monthly_budget > 0 else 0,
+        "daily_costs": daily_costs,
+        "category_costs_weekly": {k: round(v, 2) for k, v in category_costs.items()},
+        "category_costs_monthly": {k: round(v * 4.33, 2) for k, v in category_costs.items()},
+        "cheapest_meals": cheapest,
+        "most_expensive_meals": most_expensive,
+        "total_meals_per_week": len(meal_details),
+        "cost_per_100kcal": cost_per_100kcal,
+        "cost_per_g_protein": cost_per_g_protein,
+        "total_weekly_calories": round(total_calories, 1),
+        "total_weekly_protein": round(total_protein, 1),
+        "total_weekly_carbs": round(total_carbs, 1),
+        "total_weekly_fats": round(total_fats, 1),
+        "has_plan": len(plan.get("days", [])) > 0,
+        "has_budget": budget_doc is not None,
+    }

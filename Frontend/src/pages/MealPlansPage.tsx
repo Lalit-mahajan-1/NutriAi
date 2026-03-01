@@ -58,13 +58,20 @@ export default function MealPlansPage() {
   const [error, setError]       = useState<string | null>(null);
 
   // ── Reactions ─────────────────────────────────────────────────────
-  const [reactions, setReactions]         = useState<Record<string, Reaction>>({});
-  const [reactionLoading, setRxnLoading]  = useState<Set<string>>(new Set());
+  // Global dish-level reactions (used for bottom "All AI Recommendations" list + DB)
+  const [reactions, setReactions] = useState<Record<string, Reaction>>({});
+  // Per-instance reactions for each day+slot on the weekly board
+  const [instanceReactions, setInstanceReactions] = useState<Record<string, Reaction>>({});
+  // Loading flags (can be keyed by dish_name or instance key)
+  const [reactionLoading, setRxnLoading] = useState<Set<string>>(new Set());
 
   // ── Fetch plan (recommendation engine: ml-backend/recommender) ───────
   const fetchPlan = useCallback(async () => {
     if (!token) return;
-    setLoading(true); setError(null);
+    setLoading(true);
+    setError(null);
+    // Clear per-instance reactions whenever a new plan is generated
+    setInstanceReactions({});
     try {
       const profileParams =
         profile && profile.height != null && profile.weight != null && profile.age != null && profile.gender != null
@@ -76,7 +83,8 @@ export default function MealPlansPage() {
               user_id: user?._id,
             }
           : undefined;
-      setPlan(await mlApi.getWeeklyPlan(token, goal, activity, diet, profileParams ?? undefined));
+      const newPlan = await mlApi.getWeeklyPlan(token, goal, activity, diet, profileParams ?? undefined);
+      setPlan(newPlan);
     } catch (err) {
       setError(err instanceof Error ? err.message : "ML server unreachable — check that it's running on :8000");
     } finally {
@@ -84,7 +92,7 @@ export default function MealPlansPage() {
     }
   }, [token, goal, diet, activity, profile, user]);
 
-  // ── Fetch reactions ───────────────────────────────────────────────
+  // ── Fetch reactions from DB (global dish-level) ───────────────────────
   const fetchReactions = useCallback(async () => {
     if (!user) return;
     try {
@@ -96,7 +104,10 @@ export default function MealPlansPage() {
       for (const p of (ld.preferences as MealPreference[])) map[p.dish_name] = "liked";
       for (const d of (dd.dislikes   as MealPreference[])) map[d.dish_name] = "disliked";
       setReactions(map);
-    } catch { /* silent */ }
+      // We intentionally do NOT pre-fill instanceReactions here so likes do not "translate" to all days.
+    } catch {
+      /* silent */
+    }
   }, [user]);
 
   // Load likes/dislikes when signed in; weekly plan is generated only on button click
@@ -105,32 +116,65 @@ export default function MealPlansPage() {
   }, [isAuthenticated, fetchReactions]);
 
   // ── Reaction toggle ───────────────────────────────────────────────
-  const toggleReaction = async (meal: MealEntry, action: "liked" | "disliked") => {
+  /**
+   * Toggle like/dislike.
+   * - instanceKey: optional key for a specific day+slot (e.g. "0-breakfast").
+   *   If provided, only that instance on the board changes.
+   * - Global dish-level preference still goes to DB using dish_name.
+   */
+  const toggleReaction = async (
+    meal: MealEntry,
+    action: "liked" | "disliked",
+    instanceKey?: string
+  ) => {
     if (!token || !user) return;
-    const key     = meal.dish_name;
-    const current = reactions[key] ?? null;
-    if (reactionLoading.has(key)) return;
 
-    const next: Reaction = current === action ? null : action;
-    setReactions(prev => ({ ...prev, [key]: next }));
-    setRxnLoading(prev => new Set(prev).add(key));
+    const dishKey = meal.dish_name;
+    const loadingKey = instanceKey || dishKey;
+
+    // Use instance-level state if provided; otherwise fall back to global dish-level
+    const currentInstance: Reaction = instanceKey
+      ? (instanceReactions[instanceKey] ?? null)
+      : (reactions[dishKey] ?? null);
+
+    if (reactionLoading.has(loadingKey)) return;
+
+    const next: Reaction = currentInstance === action ? null : action;
+
+    // Optimistic UI update:
+    // 1) Update global dish-level reactions (used by bottom list & persisted preferences)
+    setReactions(prev => ({ ...prev, [dishKey]: next }));
+    // 2) Update per-instance reaction if this came from the board
+    if (instanceKey) {
+      setInstanceReactions(prev => ({ ...prev, [instanceKey]: next }));
+    }
+
+    setRxnLoading(prev => new Set(prev).add(loadingKey));
 
     const payload = {
-      user_id: user._id, dish_name: meal.dish_name,
-      calories_kcal: meal.calories_kcal, protein_g: meal.protein_g,
-      carbs_g: meal.carbs_g, fats_g: meal.fats_g,
-      category: meal.category, veg_nonveg: meal.veg_nonveg,
+      user_id: user._id,
+      dish_name: meal.dish_name,
+      calories_kcal: meal.calories_kcal,
+      protein_g: meal.protein_g,
+      carbs_g: meal.carbs_g,
+      fats_g: meal.fats_g,
+      category: meal.category,
+      veg_nonveg: meal.veg_nonveg,
     };
 
     try {
       if      (next === "liked")    await mlApi.likeMeal(token, payload);
       else if (next === "disliked") await mlApi.dislikeMeal(token, payload);
-      else if (current === "liked") await mlApi.unlikeMeal(token, user._id, key);
-      else                          await mlApi.undislikeMeal(token, user._id, key);
+      else if (currentInstance === "liked")    await mlApi.unlikeMeal(token, user._id, dishKey);
+      else /* currentInstance === "disliked" */ await mlApi.undislikeMeal(token, user._id, dishKey);
     } catch {
-      setReactions(prev => ({ ...prev, [key]: current }));
+      // Revert on error
+      setReactions(prev => ({ ...prev, [dishKey]: currentInstance }));
+      if (instanceKey) {
+        setInstanceReactions(prev => ({ ...prev, [instanceKey]: currentInstance }));
+      }
     } finally {
-      setRxnLoading(prev => { const s = new Set(prev); s.delete(key); return s; });
+      setRxnLoading(prev => { const s = new Set(prev); s.delete(loadingKey); return s; });
     }
   };
 
@@ -390,8 +434,9 @@ export default function MealPlansPage() {
 
                         {(["breakfast","lunch","snack","dinner"] as MealSlot[]).map(slot => {
                           const m    = dayMeals[slot] ?? null;
-                          const rx   = m ? (reactions[m.dish_name] ?? null) : null;
-                          const busy = m ? reactionLoading.has(m.dish_name) : false;
+                          const instanceKey = `${dayIdx}-${slot}`;
+                          const rx   = m ? (instanceReactions[instanceKey] ?? null) : null;
+                          const busy = reactionLoading.has(instanceKey);
 
                           return (
                             <div key={slot} className="mslot2">
@@ -407,14 +452,22 @@ export default function MealPlansPage() {
                                   <div className="ms-dish">{m.dish_name}</div>
                                   <div className="ms-meta">🔥{Math.round(m.calories_kcal)} kcal · 💪{m.protein_g.toFixed(1)}g</div>
 
-                                  {/* compact rating */}
+                                  {/* compact rating (per-day-slot) */}
                                   <div className="rxn-mini">
-                                    <button className={`rxm lk${rx==="liked"?" on":""}`} disabled={busy}
-                                      onClick={() => toggleReaction(m!, "liked")} title="Like">
+                                    <button
+                                      className={`rxm lk${rx==="liked"?" on":""}`}
+                                      disabled={busy}
+                                      onClick={() => toggleReaction(m!, "liked", instanceKey)}
+                                      title="Like"
+                                    >
                                       <ThumbsUp size={10} fill={rx==="liked"?"#16A34A":"none"} color={rx==="liked"?"#16A34A":"#8A4828"}/>
                                     </button>
-                                    <button className={`rxm dk${rx==="disliked"?" on":""}`} disabled={busy}
-                                      onClick={() => toggleReaction(m!, "disliked")} title="Dislike">
+                                    <button
+                                      className={`rxm dk${rx==="disliked"?" on":""}`}
+                                      disabled={busy}
+                                      onClick={() => toggleReaction(m!, "disliked", instanceKey)}
+                                      title="Dislike"
+                                    >
                                       <ThumbsDown size={10} fill={rx==="disliked"?"#DC2626":"none"} color={rx==="disliked"?"#DC2626":"#8A4828"}/>
                                     </button>
                                     {rx && (
@@ -517,10 +570,20 @@ export default function MealPlansPage() {
                         </div>
 
                         <div className="rxn-wrap">
-                          <button className={`rxn lbtn${rx==="liked"?" on":""}`} disabled={busy} title="Like" onClick={() => toggleReaction(m,"liked")}>
+                          <button
+                            className={`rxn lbtn${rx==="liked"?" on":""}`}
+                            disabled={busy}
+                            title="Like"
+                            onClick={() => toggleReaction(m,"liked")}
+                          >
                             <ThumbsUp size={14} fill={rx==="liked"?"#16A34A":"none"} color={rx==="liked"?"#16A34A":"#8A4828"}/>
                           </button>
-                          <button className={`rxn dbtn${rx==="disliked"?" on":""}`} disabled={busy} title="Dislike — won't appear again" onClick={() => toggleReaction(m,"disliked")}>
+                          <button
+                            className={`rxn dbtn${rx==="disliked"?" on":""}`}
+                            disabled={busy}
+                            title="Dislike — won't appear again"
+                            onClick={() => toggleReaction(m,"disliked")}
+                          >
                             <ThumbsDown size={14} fill={rx==="disliked"?"#DC2626":"none"} color={rx==="disliked"?"#DC2626":"#8A4828"}/>
                           </button>
                         </div>

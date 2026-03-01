@@ -1,43 +1,60 @@
-"""
-Async MongoDB connection for the NutriSight ML backend.
-Connects to the same Atlas cluster as the Node.js backend using MONGO_URI from .env.
-"""
+# app/database.py
 
 import os
+from typing import Optional
+
 from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import load_dotenv
 
 load_dotenv()
 
-MONGO_URI = os.getenv("MONGO_URI")
+# Example: "mongodb://localhost:27017/NutriAi"
+MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017/NutriAi")
 
-if not MONGO_URI:
-    raise RuntimeError("MONGO_URI not set in ml-backend/.env — copy it from Backend/.env")
-
-_client: AsyncIOMotorClient | None = None
+_client: Optional[AsyncIOMotorClient] = None
+_db = None
 
 
 def get_client() -> AsyncIOMotorClient:
+    """
+    Singleton Motor client.
+    Uses MONGO_URI from .env.
+    For local "mongodb://..." we do NOT enable TLS/SSL.
+    """
     global _client
     if _client is None:
         _client = AsyncIOMotorClient(
             MONGO_URI,
-            tls=True,
             serverSelectionTimeoutMS=5000,
+            connectTimeoutMS=5000,
+            # IMPORTANT: no TLS for local mongodb:// unless you explicitly configured Mongo with TLS
+            tls=False,
         )
     return _client
 
 
 def get_db():
-    """Return the nutrisight database handle."""
-    return get_client()["nutrisight"]
+    """
+    Return the default database from the connection string.
+    With mongodb://localhost:27017/NutriAi this is "NutriAi".
+    """
+    global _db
+    if _db is None:
+        _db = get_client().get_default_database()
+    return _db
 
 
 def get_scans_collection():
-    """Return the body_scans collection."""
+    """
+    Collection where camera/body scans are stored.
+    Used by /camera-analyze and /scan-history.
+    """
     return get_db()["body_scans"]
 
 
 def get_preferences_collection():
-    """Return the meal_preferences collection."""
-    return get_db()["meal_preferences"]
+    """
+    Collection where liked meals are stored.
+    Used by /preferences endpoints.
+    """
+    return get_db()["meal_likes"]

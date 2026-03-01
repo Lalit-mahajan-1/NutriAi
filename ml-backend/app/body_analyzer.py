@@ -44,7 +44,11 @@ def analyze_body(height_cm: float, weight_kg: float, age: int, gender: str, acti
 
     waist_hip, shoulder_waist, torso_leg, body_aspect = estimate_body_ratios(bmi)
 
-    gender_encoded = 1 if gender.lower() == "male" else 0
+    normalized_gender = gender.lower() if isinstance(gender, str) else "male"
+    if normalized_gender not in ("male", "female"):
+        normalized_gender = "male"
+
+    gender_encoded = 1 if normalized_gender == "male" else 0
 
     features = np.array([[
         bmi,
@@ -68,7 +72,7 @@ def analyze_body(height_cm: float, weight_kg: float, age: int, gender: str, acti
         weight_kg=weight_kg,
         height_cm=height_cm,
         age=age,
-        gender=gender,
+        gender=normalized_gender,
         category=category,
         activity_level=activity_level
     )

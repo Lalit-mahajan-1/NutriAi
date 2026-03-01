@@ -1,6 +1,35 @@
 // API client for NutriSight Backend
-// ─── ML Backend (FastAPI, port 8000) ───────────────────────────────────────
-const ML_URL = "http://localhost:8000/api";
+// ML Backend (FastAPI)
+const ML_BASE_URL = (import.meta.env.VITE_ML_API_URL as string | undefined)?.trim() || "http://localhost:8000";
+const ML_URL = ML_BASE_URL.endsWith("/api") ? ML_BASE_URL : `${ML_BASE_URL}/api`;
+
+async function mlFetchJson<T>(path: string, init?: RequestInit): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(`${ML_URL}${path}`, init);
+  } catch {
+    throw new Error(`ML backend unreachable at ${ML_URL}. Start FastAPI and check port.`);
+  }
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const msg = (data?.detail ?? data?.error ?? data?.message ?? `ML request failed (${res.status})`) as string;
+    throw new Error(Array.isArray(msg) ? msg.join(" ") : msg);
+  }
+
+  return data as T;
+}
+
+const normalizeMlGender = (gender: string) =>
+  gender?.toLowerCase?.() === "female" ? "female" : "male";
+
+const normalizeMlActivityLevel = (activity: string) => {
+  const a = activity?.toLowerCase?.() ?? "moderate";
+  if (a === "sedentary" || a === "light" || a === "moderate" || a === "active" || a === "very_active") {
+    return a;
+  }
+  return "moderate";
+};
 
 export interface MealEntry {
   dish_name: string;
@@ -110,6 +139,32 @@ export interface ScanRecord {
   nutrition_plan?: { daily_targets: { calories: number; protein_g: number; carbs_g: number; fats_g: number; fiber_g: number; water_ml: number } };
 }
 
+export interface MlBudgetAnalysis {
+  monthly_budget: number;
+  current_monthly_spend: number;
+  weekly_ai_cost: number;
+  monthly_ai_cost: number;
+  daily_average: number;
+  savings_vs_current: number;
+  savings_vs_budget: number;
+  savings_percentage: number;
+  budget_utilization: number;
+  daily_costs: Array<{ date: string; day_index: number; cost: number }>;
+  category_costs_weekly: Record<string, number>;
+  category_costs_monthly: Record<string, number>;
+  cheapest_meals: Array<{ dish_name: string; price_inr: number; meal_type: string }>;
+  most_expensive_meals: Array<{ dish_name: string; price_inr: number; meal_type: string }>;
+  total_meals_per_week: number;
+  cost_per_100kcal: number;
+  cost_per_g_protein: number;
+  total_weekly_calories: number;
+  total_weekly_protein: number;
+  total_weekly_carbs: number;
+  total_weekly_fats: number;
+  has_plan: boolean;
+  has_budget: boolean;
+}
+
 export const mlApi = {
   analyze: (meal_name: string, weight_grams: number) =>
     fetch(`${ML_URL}/analyze`, {
@@ -118,12 +173,39 @@ export const mlApi = {
       body: JSON.stringify({ meal_name, weight_grams }),
     }).then(r => r.json() as Promise<MealNutrition>),
 
-  bodyAnalyze: (height_cm: number, weight_kg: number, age: number, gender: string, activity_level: string) =>
-    fetch(`${ML_URL}/body-analyze`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ height_cm, weight_kg, age, gender, activity_level }),
-    }).then(r => r.json() as Promise<BodyAnalysis>),
+  bodyAnalyze: async (height_cm: number, weight_kg: number, age: number, gender: string, activity_level: string) => {
+    const payload = {
+      height_cm,
+      weight_kg,
+      age,
+      gender: normalizeMlGender(gender),
+      activity_level: normalizeMlActivityLevel(activity_level),
+    };
+
+    const call = async (path: "body-analysis" | "body-analyze") => {
+      const token = localStorage.getItem("nutrisight_token");
+      const r = await fetch(`${ML_URL}/${path}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify(payload),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        const msg = (data?.detail ?? data?.error ?? data?.message ?? "Body analysis failed") as string;
+        throw new Error(Array.isArray(msg) ? msg.join(" ") : msg);
+      }
+      return data as BodyAnalysis;
+    };
+
+    try {
+      return await call("body-analysis");
+    } catch {
+      return await call("body-analyze");
+    }
+  },
 
   cameraAnalyze: (payload: {
     user_id: string;
@@ -216,6 +298,38 @@ export const mlApi = {
   getMealPrices: () =>
     fetch(`${ML_URL}/meal-prices`)
       .then(r => r.json() as Promise<{ prices: Record<string, number>; count: number; avg_inr: number; min_inr: number; max_inr: number }>),
+
+  getBudget: (userId: string) =>
+    fetch(`${ML_URL}/budget/${userId}`, {
+      headers: {
+        ...(localStorage.getItem("nutrisight_token")
+          ? { Authorization: `Bearer ${localStorage.getItem("nutrisight_token")}` }
+          : {}),
+      },
+    })
+      .then(r => r.json() as Promise<{ budget: { monthly_budget: number; current_monthly_spend: number; updated_at?: string } | null }>),
+
+  saveBudget: (userId: string, monthlyBudget: number, currentMonthlySpend = 0) =>
+    fetch(`${ML_URL}/budget/${userId}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(localStorage.getItem("nutrisight_token")
+          ? { Authorization: `Bearer ${localStorage.getItem("nutrisight_token")}` }
+          : {}),
+      },
+      body: JSON.stringify({ monthly_budget: monthlyBudget, current_monthly_spend: currentMonthlySpend }),
+    }).then(r => r.json() as Promise<{ success: boolean; budget: { monthly_budget: number; current_monthly_spend: number } }>),
+
+  getBudgetAnalysis: (userId: string) =>
+    fetch(`${ML_URL}/budget-analysis/${userId}`, {
+      headers: {
+        ...(localStorage.getItem("nutrisight_token")
+          ? { Authorization: `Bearer ${localStorage.getItem("nutrisight_token")}` }
+          : {}),
+      },
+    })
+      .then(r => r.json() as Promise<MlBudgetAnalysis>),
 };
 
 // ─── Main Backend (Express, port 5000) ────────────────────────────────────
@@ -295,3 +409,5 @@ export const userApi = {
   getUserById: (userId: string) =>
     request<UserProfile>(`/users/${userId}`),
 };
+
+

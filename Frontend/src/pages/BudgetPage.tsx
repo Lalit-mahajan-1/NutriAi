@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from "react";
-import { mlApi, MealEntry, WeeklyPlan } from "@/lib/api";
+import { mlApi, MealEntry, WeeklyPlan, MlBudgetAnalysis } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { Wallet, TrendingUp, PlusCircle, Trash2, ChefHat, BarChart3, ShoppingCart } from "lucide-react";
 
@@ -195,7 +195,7 @@ function BudgetRing({ spent, budget, size = 120 }: { spent: number; budget: numb
 // MAIN COMPONENT
 // ═══════════════════════════════════════════════════════════════════
 export default function EnhancedBudgetPage() {
-  const { token, user, isAuthenticated } = useAuth();
+  const { token, user, profile, isAuthenticated } = useAuth();
 
   // ── Persisted state ──────────────────────────────────────────────
   const [wallet, setWallet]         = useLocalStorage<number>("ns_wallet", 3000);
@@ -206,12 +206,19 @@ export default function EnhancedBudgetPage() {
   const [weekPlan, setWeekPlan]     = useState<WeeklyPlan | null>(null);
   const [allMeals, setAllMeals]     = useState<MealEntry[]>([]);
   const [priceMap, setPriceMap]     = useState<Record<string, number>>({});
+  const [budgetAnalysis, setBudgetAnalysis] = useState<MlBudgetAnalysis | null>(null);
   const [planLoading, setPlanLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   // ── UI ────────────────────────────────────────────────────────────
   const [walletInput, setWalletInput]   = useState(String(wallet));
   const [addedSet, setAddedSet]         = useState<Set<string>>(new Set());
   const [toast, setToast]               = useState<string | null>(null);
+  const [todayChecks, setTodayChecks]   = useState<Record<string, boolean>>({});
+  const [customName, setCustomName]     = useState("");
+  const [customPrice, setCustomPrice]   = useState("");
+  const [customCalories, setCustomCalories] = useState("");
+  const [customCategory, setCustomCategory] = useState("snack");
   const toastRef = useRef<ReturnType<typeof setTimeout>>();
 
   const showToast = (msg: string) => {
@@ -222,22 +229,59 @@ export default function EnhancedBudgetPage() {
 
   // ── Load ML plan + prices ─────────────────────────────────────────
   const loadPlan = useCallback(async () => {
-    if (!token) return;
+    if (!token || !user) return;
     setPlanLoading(true);
+    setLoadError(null);
     try {
+      const safeHeight = profile?.height != null && profile.height > 0 ? profile.height : 170;
+      const safeWeight = profile?.weight != null && profile.weight > 0 ? profile.weight : 70;
+      const safeAge = profile?.age != null && profile.age > 0 ? profile.age : 25;
+      const safeGender = profile?.gender?.toLowerCase() === "female" ? "female" : "male";
+      const profileParams = {
+        height: safeHeight,
+        weight: safeWeight,
+        age: safeAge,
+        gender: safeGender,
+        user_id: user._id,
+      };
+
+      // Core data should render even if analysis endpoints fail.
       const [planData, priceData] = await Promise.all([
-        mlApi.getWeeklyPlan(token),
+        mlApi.getWeeklyPlan(token, "maintenance", "moderate", "veg", profileParams),
         mlApi.getMealPrices(),
       ]);
+
       setWeekPlan(planData);
       setAllMeals(collectAllMeals(planData));
       setPriceMap(priceData.prices ?? {});
+
+      const [analysisRes, budgetRes] = await Promise.allSettled([
+        mlApi.getBudgetAnalysis(user._id),
+        mlApi.getBudget(user._id),
+      ]);
+
+      if (analysisRes.status === "fulfilled") {
+        setBudgetAnalysis(analysisRes.value);
+      } else {
+        setBudgetAnalysis(null);
+      }
+
+      if (budgetRes.status === "fulfilled" && budgetRes.value?.budget?.monthly_budget && budgetRes.value.budget.monthly_budget > 0) {
+        const monthlyBudget = Math.round(budgetRes.value.budget.monthly_budget);
+        setWallet(monthlyBudget);
+        setWalletInput(String(monthlyBudget));
+      }
+
+      if (analysisRes.status === "rejected" || budgetRes.status === "rejected") {
+        setLoadError("Some budget insights could not be loaded. Meal recommendations are still available.");
+      }
     } catch {
-      // silently continue with empty meal list
+      setBudgetAnalysis(null);
+      setLoadError("Failed to load data from ML backend. Check ml-backend on port 8000.");
     } finally {
       setPlanLoading(false);
     }
-  }, [token]);
+  }, [token, user, profile, setWallet]);
 
   useEffect(() => {
     if (isAuthenticated) loadPlan();
@@ -248,6 +292,21 @@ export default function EnhancedBudgetPage() {
     const todayNames = new Set(budgetItems.filter(e => e.date.startsWith(today)).map(e => e.dish_name));
     setAddedSet(todayNames);
   }, [budgetItems]);
+
+  useEffect(() => {
+    const key = `ns_today_checks_${today}`;
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw) setTodayChecks(JSON.parse(raw));
+      else setTodayChecks({});
+    } catch {
+      setTodayChecks({});
+    }
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem(`ns_today_checks_${today}`, JSON.stringify(todayChecks));
+  }, [todayChecks]);
 
   // ── Derived computations ──────────────────────────────────────────
   const dailyLogs = buildDailyLogs(budgetItems, 30);
@@ -267,10 +326,38 @@ export default function EnhancedBudgetPage() {
     return Object.entries(map).sort(([, a], [, b]) => b - a);
   })();
 
+  const mlMonthlyAiCost = budgetAnalysis?.monthly_ai_cost ?? projected;
+  const mlDailyAverage = budgetAnalysis?.daily_average
+    ?? (budgetItems.length > 0 ? Math.round(totalSpent / Math.max(dailyLogs.filter(d => d.total > 0).length, 1)) : 0);
+  const mlBudgetUtilization = budgetAnalysis?.budget_utilization
+    ?? (wallet > 0 ? Math.round((totalSpent / wallet) * 1000) / 10 : 0);
+  const mlSavingsVsCurrent = budgetAnalysis?.savings_vs_current ?? 0;
+  const todayIdx = (() => {
+    const d = new Date().getDay(); // 0 Sun ... 6 Sat
+    return d === 0 ? 6 : d - 1;    // 0 Mon ... 6 Sun
+  })();
+  const todaysPlanMeals = weekPlan
+    ? (Object.values(weekPlan.days?.[todayIdx]?.meals ?? {}).filter(Boolean) as MealEntry[])
+    : [];
+  const checkedMeals = todaysPlanMeals.filter(m => todayChecks[m.dish_name]);
+  const checkedTotals = checkedMeals.reduce(
+    (acc, m) => ({ price: acc.price + (m.price_inr ?? priceMap[m.dish_name] ?? 0), calories: acc.calories + (m.calories_kcal ?? 0) }),
+    { price: 0, calories: 0 },
+  );
+
   // ── Actions ───────────────────────────────────────────────────────
-  const saveWallet = () => {
+  const saveWallet = async () => {
     const n = Number(walletInput);
-    if (n > 0) { setWallet(n); showToast("✅ Wallet saved!"); }
+    if (n <= 0) return;
+    setWallet(n);
+    if (user?._id) {
+      try {
+        await mlApi.saveBudget(user._id, n, totalSpent);
+      } catch {
+        // keep local wallet even if backend save fails
+      }
+    }
+    showToast("✅ Wallet saved!");
   };
 
   const addMeal = (meal: MealEntry) => {
@@ -284,6 +371,36 @@ export default function EnhancedBudgetPage() {
     };
     setBudgetItems(prev => [...prev, entry]);
     showToast(`🍽️ Added ${meal.dish_name} — ₹${price}`);
+  };
+
+  const addCheckedMeals = () => {
+    if (!checkedMeals.length) return;
+    checkedMeals.forEach((m) => addMeal(m));
+    setTodayChecks({});
+  };
+
+  const addCustomMeal = () => {
+    const name = customName.trim();
+    const price = Number(customPrice);
+    const calories = Number(customCalories);
+    if (!name || !(price > 0) || !(calories > 0)) {
+      showToast("Enter name, price and calories");
+      return;
+    }
+    const entry: BudgetEntry = {
+      id: genId(),
+      date: new Date().toISOString(),
+      dish_name: name,
+      price_inr: price,
+      category: customCategory,
+      calories_kcal: calories,
+      veg_nonveg: "Veg",
+    };
+    setBudgetItems(prev => [...prev, entry]);
+    setCustomName("");
+    setCustomPrice("");
+    setCustomCalories("");
+    showToast(`✅ Added ${name} — ₹${price}`);
   };
 
   const removeEntry = (id: string) => setBudgetItems(prev => prev.filter(e => e.id !== id));
@@ -425,7 +542,7 @@ export default function EnhancedBudgetPage() {
             { emoji:"💳", val:`₹${wallet.toLocaleString()}`, sub:"Monthly wallet",        color:"#6366F1", glow:"rgba(99,102,241,.08)" },
             { emoji:"💸", val:`₹${Math.round(totalSpent)}`,  sub:"Total spent",           color:over?"#EF4444":"#FF6B3D", glow:`rgba(255,107,61,.08)` },
             { emoji:"🟢", val:`₹${Math.round(remaining)}`,   sub:"Remaining",             color:"#22C55E", glow:"rgba(34,197,94,.08)" },
-            { emoji:"📈", val:`₹${projected}`,               sub:"Projected (30 days)",   color:"#F59E0B", glow:"rgba(245,158,11,.08)" },
+            { emoji:"📈", val:`₹${Math.round(mlMonthlyAiCost)}`, sub:"AI Monthly Cost",  color:"#F59E0B", glow:"rgba(245,158,11,.08)" },
             { emoji:"🍽️", val:`₹${Math.round(todaySpent)}`, sub:"Today's spend",         color:"#8B5CF6", glow:"rgba(139,92,246,.08)" },
           ].map(s => (
             <div key={s.sub} className="stat-card" style={{ background:`linear-gradient(135deg,rgba(255,255,255,.85),${s.glow})` }}>
@@ -445,9 +562,76 @@ export default function EnhancedBudgetPage() {
           ))}
         </div>
 
+        {loadError && (
+          <div style={{ marginBottom:16, background:"rgba(239,68,68,.08)", border:"1px solid rgba(239,68,68,.25)", borderRadius:12, padding:"10px 14px", color:"#B91C1C", fontSize:12, fontWeight:700 }}>
+            ⚠ {loadError}
+          </div>
+        )}
+
         {/* ════════════════════ OVERVIEW ════════════════════ */}
         {activeTab === "overview" && (
           <div style={{ display:"flex", flexDirection:"column", gap:16, animation:"fadeUp .35s cubic-bezier(.22,1,.36,1)" }}>
+
+            {/* Today's menu checklist */}
+            <div className="card">
+              <div className="slab" style={{ marginBottom:10 }}>Today's Menu</div>
+              {todaysPlanMeals.length === 0 ? (
+                <div className="meta-text">No menu for today yet. Generate/refresh AI plan.</div>
+              ) : (
+                <>
+                  <div style={{ display:"flex", flexDirection:"column", gap:8, marginBottom:10 }}>
+                    {todaysPlanMeals.map((m) => {
+                      const checked = !!todayChecks[m.dish_name];
+                      const price = m.price_inr ?? priceMap[m.dish_name] ?? 0;
+                      return (
+                        <label key={m.dish_name} style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:10, padding:"8px 10px", borderRadius:10, background:"rgba(255,255,255,.64)", border:"1px solid rgba(255,160,120,.18)" }}>
+                          <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={(e) => setTodayChecks(prev => ({ ...prev, [m.dish_name]: e.target.checked }))}
+                            />
+                            <span style={{ fontSize:13, fontWeight:700, color:"#2D1206" }}>{m.dish_name}</span>
+                          </div>
+                          <span style={{ fontSize:12, color:"#8A4828", fontWeight:700 }}>₹{Math.round(price)} · {Math.round(m.calories_kcal)} kcal</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                  <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:10, flexWrap:"wrap" }}>
+                    <div className="meta-text" style={{ fontWeight:700 }}>
+                      Selected: ₹{Math.round(checkedTotals.price)} · {Math.round(checkedTotals.calories)} kcal
+                    </div>
+                    <button
+                      onClick={addCheckedMeals}
+                      disabled={!checkedMeals.length}
+                      style={{ border:"none", background:checkedMeals.length ? "linear-gradient(135deg,#FF8C5A,#FF5C1A)" : "rgba(255,92,26,.2)", color:"#fff", borderRadius:10, padding:"8px 14px", fontWeight:700, fontSize:12, cursor:checkedMeals.length ? "pointer" : "default" }}
+                    >
+                      Add Checked
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Manual bought item add */}
+            <div className="card">
+              <div className="slab" style={{ marginBottom:10 }}>Add Bought Item</div>
+              <div style={{ display:"grid", gridTemplateColumns:"1.6fr .8fr .8fr .9fr auto", gap:8 }}>
+                <input value={customName} onChange={e => setCustomName(e.target.value)} placeholder="Item name" className="wallet-input" style={{ height:38, fontSize:12 }} />
+                <input value={customPrice} onChange={e => setCustomPrice(e.target.value)} placeholder="Price" type="number" className="wallet-input" style={{ height:38, fontSize:12 }} />
+                <input value={customCalories} onChange={e => setCustomCalories(e.target.value)} placeholder="Kcal" type="number" className="wallet-input" style={{ height:38, fontSize:12 }} />
+                <select value={customCategory} onChange={e => setCustomCategory(e.target.value)} className="wallet-input" style={{ height:38, fontSize:12 }}>
+                  <option value="breakfast">Breakfast</option>
+                  <option value="lunch">Lunch</option>
+                  <option value="snack">Snack</option>
+                  <option value="dinner">Dinner</option>
+                </select>
+                <button onClick={addCustomMeal} style={{ border:"none", background:"linear-gradient(135deg,#FF8C5A,#FF5C1A)", color:"#fff", borderRadius:10, padding:"0 12px", fontWeight:800, fontSize:12, cursor:"pointer" }}>
+                  Add
+                </button>
+              </div>
+            </div>
 
             {/* Budget ring + sparkline */}
             <div style={{ display:"grid", gridTemplateColumns:"180px 1fr", gap:16 }}>
@@ -492,6 +676,47 @@ export default function EnhancedBudgetPage() {
               </div>
             </div>
 
+            {/* ML backend analysis */}
+            <div className="card">
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10, flexWrap:"wrap", gap:8 }}>
+                <div className="slab" style={{ margin:0 }}>ML Budget Analysis</div>
+                {budgetAnalysis?.has_plan === false && (
+                  <div style={{ fontSize:11, fontWeight:700, color:"#B06040" }}>
+                    Weekly plan not persisted yet; showing available metrics
+                  </div>
+                )}
+              </div>
+              <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))", gap:10, marginBottom:12 }}>
+                {[
+                  { k:"AI Weekly Cost", v:`₹${Math.round(budgetAnalysis?.weekly_ai_cost ?? 0)}` },
+                  { k:"AI Monthly Cost", v:`₹${Math.round(mlMonthlyAiCost)}` },
+                  { k:"Daily Average", v:`₹${Math.round(mlDailyAverage)}` },
+                  { k:"Utilization", v:`${mlBudgetUtilization}%` },
+                  { k:"Savings vs Current", v:`₹${Math.round(mlSavingsVsCurrent)}` },
+                  { k:"Meals/Week", v:`${Math.round(budgetAnalysis?.total_meals_per_week ?? 0)}` },
+                ].map(m => (
+                  <div key={m.k} style={{ background:"rgba(255,255,255,.62)", border:"1px solid rgba(255,160,120,.25)", borderRadius:12, padding:"10px 12px" }}>
+                    <div style={{ fontSize:11, fontWeight:700, color:"#8A4828", marginBottom:4 }}>{m.k}</div>
+                    <div style={{ fontFamily:"'Fraunces',serif", fontSize:"1.15rem", fontWeight:900, color:"#2D1206" }}>{m.v}</div>
+                  </div>
+                ))}
+              </div>
+              {(budgetAnalysis?.cheapest_meals?.length ?? 0) > 0 && (
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+                  <div style={{ background:"rgba(34,197,94,.08)", border:"1px solid rgba(34,197,94,.2)", borderRadius:12, padding:"10px 12px" }}>
+                    <div style={{ fontSize:11, fontWeight:800, color:"#15803D", marginBottom:6 }}>Cheapest Meal</div>
+                    <div style={{ fontSize:13, fontWeight:700, color:"#2D1206" }}>{budgetAnalysis?.cheapest_meals?.[0]?.dish_name}</div>
+                    <div style={{ fontSize:12, color:"#166534", fontWeight:700 }}>₹{Math.round(budgetAnalysis?.cheapest_meals?.[0]?.price_inr ?? 0)}</div>
+                  </div>
+                  <div style={{ background:"rgba(239,68,68,.08)", border:"1px solid rgba(239,68,68,.2)", borderRadius:12, padding:"10px 12px" }}>
+                    <div style={{ fontSize:11, fontWeight:800, color:"#B91C1C", marginBottom:6 }}>Most Expensive Meal</div>
+                    <div style={{ fontSize:13, fontWeight:700, color:"#2D1206" }}>{budgetAnalysis?.most_expensive_meals?.[0]?.dish_name}</div>
+                    <div style={{ fontSize:12, color:"#B91C1C", fontWeight:700 }}>₹{Math.round(budgetAnalysis?.most_expensive_meals?.[0]?.price_inr ?? 0)}</div>
+                  </div>
+                </div>
+              )}
+            </div>
+
             {/* Category & Projection */}
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16 }}>
               <div className="card">
@@ -524,10 +749,10 @@ export default function EnhancedBudgetPage() {
                 <div className="slab">Projections & Insights</div>
                 <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
                   {[
-                    { label:"Projected Month",   val:`₹${projected}`,                  color:projected > wallet ? "#EF4444":"#22C55E", note:projected > wallet ? "⚠️ Over budget" : "✓ On track" },
-                    { label:"Daily Average",      val:`₹${budgetItems.length > 0 ? Math.round(totalSpent / Math.max(dailyLogs.filter(d=>d.total>0).length, 1)) : 0}`, color:"#FF6B3D" },
+                    { label:"Projected Month",   val:`₹${Math.round(mlMonthlyAiCost)}`, color:mlMonthlyAiCost > wallet ? "#EF4444":"#22C55E", note:mlMonthlyAiCost > wallet ? "⚠️ Over budget" : "✓ On track" },
+                    { label:"Daily Average",      val:`₹${Math.round(mlDailyAverage)}`, color:"#FF6B3D" },
                     { label:"Best Day Savings",   val:`₹${Math.max(0, Math.round(wallet/30 - Math.min(...dailyLogs.map(d=>d.total).filter(v=>v>0), wallet/30)))}/day`, color:"#22C55E" },
-                    { label:"Meals Tracked",      val:budgetItems.length,               color:"#8B5CF6" },
+                    { label:"Meals Tracked",      val:budgetAnalysis?.total_meals_per_week ?? budgetItems.length, color:"#8B5CF6" },
                   ].map(s => (
                     <div key={s.label} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", paddingBottom:10, borderBottom:"1px solid rgba(230,150,100,.1)" }}>
                       <span style={{ fontSize:12, fontWeight:600, color:"rgba(92,61,46,.7)" }}>{s.label}</span>

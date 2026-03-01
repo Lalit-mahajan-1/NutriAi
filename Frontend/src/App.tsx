@@ -18,7 +18,7 @@ import AuthPage from "./pages/AuthPage";
 import ProfilePage from "./pages/ProfilePage";
 import NutritionHomePage from "./pages/NutritionHomePage";
 import NotFound from "./pages/NotFound";
-
+import MealPhoto from "./pages/MealPhoto";
 const queryClient = new QueryClient();
 
 // Pages that hide the global Navbar/Footer
@@ -52,13 +52,22 @@ const App = () => (
               <Route path="/how-it-works" element={<HowItWorksPage />} />
               <Route path="/meal-plans"   element={<MealPlansPage />}  />
               <Route path="/budget"       element={<BudgetPage />}     />
-              <Route path="/health"       element={<HealthPage />}     />
+              {/* <Route path="/health"       element={<HealthPage />}     /> */}
               <Route path="/about"        element={<AboutPage />}      />
-              <Route
+              <Route path="/meal-photo" element={<MealPhoto />} />
+              {/* <Route
                 path="/dashboard"
                 element={
                   <ProtectedRoute>
                     <DashboardPage />
+                  </ProtectedRoute>
+                }
+              /> */}
+              <Route
+                path="/home"
+                element={
+                  <ProtectedRoute>
+                    <NutritionHomePage />
                   </ProtectedRoute>
                 }
               />
