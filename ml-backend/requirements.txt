@@ -12,3 +12,4 @@ python-dotenv
 pillow
 motor
 pymongo
+anthropic

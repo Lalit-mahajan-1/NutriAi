@@ -22,6 +22,7 @@ class UserProfile:
     target_protein_g: float | None = None
     dietary_pref: Literal["veg", "non-veg"] = "veg"
     allergies: list[str] | None = None   # list of substrings to avoid in dish name
+    daily_budget_inr: float | None = None  # hard spending cap per day; None = unconstrained
 
     @property
     def bmi(self) -> float:

@@ -199,7 +199,8 @@ export default function EnhancedBudgetPage() {
 
   // ── Persisted state ──────────────────────────────────────────────
   const [wallet, setWallet]         = useLocalStorage<number>("ns_wallet", 3000);
-  const [budgetItems, setBudgetItems] = useLocalStorage<BudgetEntry[]>("ns_budget_items", []);
+  // Spending log now lives in MongoDB (per-user, survives cache clears & devices)
+  const [budgetItems, setBudgetItems] = useState<BudgetEntry[]>([]);
   const [activeTab, setActiveTab]   = useState("overview");
 
   // ── ML data ──────────────────────────────────────────────────────
@@ -287,6 +288,14 @@ export default function EnhancedBudgetPage() {
     if (isAuthenticated) loadPlan();
   }, [isAuthenticated, loadPlan]);
 
+  // Load the persisted spending log from MongoDB
+  useEffect(() => {
+    if (!isAuthenticated || !user?._id) return;
+    mlApi.getBudgetEntries(user._id)
+      .then(r => setBudgetItems(r.entries ?? []))
+      .catch(() => { /* non-critical — page still works without the log */ });
+  }, [isAuthenticated, user]);
+
   // Keep addedSet in sync with budgetItems (today's)
   useEffect(() => {
     const todayNames = new Set(budgetItems.filter(e => e.date.startsWith(today)).map(e => e.dish_name));
@@ -360,6 +369,17 @@ export default function EnhancedBudgetPage() {
     showToast("✅ Wallet saved!");
   };
 
+  // Persist a new entry; roll back the optimistic insert if the save fails.
+  const persistAdd = async (entry: BudgetEntry) => {
+    if (!user?._id) return;
+    try {
+      await mlApi.addBudgetEntry(user._id, entry);
+    } catch {
+      setBudgetItems(prev => prev.filter(e => e.id !== entry.id));
+      showToast("⚠ Couldn't save — check connection");
+    }
+  };
+
   const addMeal = (meal: MealEntry) => {
     const price = meal.price_inr ?? priceMap[meal.dish_name] ?? 50;
     const entry: BudgetEntry = {
@@ -371,6 +391,7 @@ export default function EnhancedBudgetPage() {
     };
     setBudgetItems(prev => [...prev, entry]);
     showToast(`🍽️ Added ${meal.dish_name} — ₹${price}`);
+    persistAdd(entry);
   };
 
   const addCheckedMeals = () => {
@@ -401,10 +422,31 @@ export default function EnhancedBudgetPage() {
     setCustomPrice("");
     setCustomCalories("");
     showToast(`✅ Added ${name} — ₹${price}`);
+    persistAdd(entry);
   };
 
-  const removeEntry = (id: string) => setBudgetItems(prev => prev.filter(e => e.id !== id));
-  const clearAll    = () => { setBudgetItems([]); showToast("🗑️ Budget cleared"); };
+  const removeEntry = (id: string) => {
+    const snapshot = budgetItems;
+    setBudgetItems(prev => prev.filter(e => e.id !== id));
+    if (user?._id) {
+      mlApi.deleteBudgetEntry(user._id, id).catch(() => {
+        setBudgetItems(snapshot);
+        showToast("⚠ Couldn't delete — check connection");
+      });
+    }
+  };
+
+  const clearAll = () => {
+    const snapshot = budgetItems;
+    setBudgetItems([]);
+    showToast("🗑️ Budget cleared");
+    if (user?._id) {
+      mlApi.clearBudgetEntries(user._id).catch(() => {
+        setBudgetItems(snapshot);
+        showToast("⚠ Couldn't clear — check connection");
+      });
+    }
+  };
 
   const tabs = [
     { k: "overview",  l: "📊 Overview",    icon: BarChart3 },
