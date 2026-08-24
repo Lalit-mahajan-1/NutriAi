@@ -51,6 +51,8 @@ export default function MealPlansPage() {
   const [goal, setGoal]         = useState<Goal>("maintenance");
   const [diet, setDiet]         = useState<Diet>("veg");
   const [activity, setActivity] = useState("moderate");
+  // Monthly food budget in ₹ (empty = unconstrained plan)
+  const [budget, setBudget]     = useState<string>("");
 
   // ── Plan data ─────────────────────────────────────────────────────
   const [plan, setPlan]         = useState<WeeklyPlan | null>(null);
@@ -83,14 +85,19 @@ export default function MealPlansPage() {
               user_id: user?._id,
             }
           : undefined;
-      const newPlan = await mlApi.getWeeklyPlan(token, goal, activity, diet, profileParams ?? undefined);
+      const parsedBudget = budget.trim() === "" ? undefined : Number(budget);
+      const monthlyBudget =
+        parsedBudget != null && Number.isFinite(parsedBudget) && parsedBudget > 0
+          ? parsedBudget
+          : budget.trim() === "" ? undefined : 0; // explicit 0 = force unconstrained
+      const newPlan = await mlApi.getWeeklyPlan(token, goal, activity, diet, profileParams ?? undefined, monthlyBudget);
       setPlan(newPlan);
     } catch (err) {
       setError(err instanceof Error ? err.message : "ML server unreachable — check that it's running on :8000");
     } finally {
       setLoading(false);
     }
-  }, [token, goal, diet, activity, profile, user]);
+  }, [token, goal, diet, activity, budget, profile, user]);
 
   // ── Fetch reactions from DB (global dish-level) ───────────────────────
   const fetchReactions = useCallback(async () => {
@@ -114,6 +121,50 @@ export default function MealPlansPage() {
   useEffect(() => {
     if (isAuthenticated) fetchReactions();
   }, [isAuthenticated, fetchReactions]);
+
+  // Prefill budget from the saved budget (set on the Budget page)
+  useEffect(() => {
+    if (!user) return;
+    mlApi.getBudget(user._id)
+      .then(r => { if (r.budget?.monthly_budget) setBudget(String(r.budget.monthly_budget)); })
+      .catch(() => { /* silent — budget stays optional */ });
+  }, [user]);
+
+  // ── Apply a cheaper swap in place ─────────────────────────────────
+  const applySwap = (dayIdx: number, slot: MealSlot) => {
+    setPlan(prev => {
+      if (!prev) return prev;
+      const target = prev.days[dayIdx]?.meals[slot];
+      const swap = target?.cheaper_swap;
+      if (!target || !swap) return prev;
+
+      const days = prev.days.map((d, i) => {
+        if (i !== dayIdx) return d;
+        const newMeal: MealEntry = {
+          dish_name: swap.dish_name,
+          calories_kcal: swap.calories_kcal,
+          protein_g: swap.protein_g,
+          carbs_g: swap.carbs_g,
+          fats_g: swap.fats_g,
+          category: target.category,
+          veg_nonveg: swap.veg_nonveg,
+          price_inr: swap.price_inr,
+          cheaper_swap: null,
+        };
+        return { ...d, meals: { ...d.meals, [slot]: newMeal } };
+      });
+
+      const plan_cost = prev.plan_cost
+        ? {
+            ...prev.plan_cost,
+            weekly_cost_inr: Math.round((prev.plan_cost.weekly_cost_inr - swap.savings_inr) * 100) / 100,
+            avg_day_cost_inr: Math.round(((prev.plan_cost.weekly_cost_inr - swap.savings_inr) / 7) * 100) / 100,
+          }
+        : prev.plan_cost;
+
+      return { ...prev, days, plan_cost };
+    });
+  };
 
   // ── Reaction toggle ───────────────────────────────────────────────
   /**
@@ -324,6 +375,26 @@ export default function MealPlansPage() {
 
         select.ctrl-s { appearance:none; background:rgba(255,255,255,.8); border:1.5px solid rgba(255,120,60,.22); border-radius:11px; padding:6px 28px 6px 12px; font-family:'DM Sans',sans-serif; font-size:12px; font-weight:600; color:#8A4828; cursor:pointer; background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%238A4828'/%3E%3C/svg%3E"); background-repeat:no-repeat; background-position:right 10px center; }
         select.ctrl-s:focus { outline:none; border-color:rgba(255,92,26,.5); }
+
+        /* ── budget input ── */
+        input.ctrl-b { background:rgba(255,255,255,.8); border:1.5px solid rgba(255,120,60,.22); border-radius:11px; padding:6px 10px; font-family:'DM Sans',sans-serif; font-size:12px; font-weight:600; color:#8A4828; width:104px; }
+        input.ctrl-b:focus { outline:none; border-color:rgba(255,92,26,.5); }
+        input.ctrl-b::placeholder { color:rgba(138,72,40,.45); font-weight:500; }
+
+        /* ── budget banner ── */
+        .bud-banner { display:flex; flex-wrap:wrap; gap:10px 22px; align-items:center; }
+        .bud-stat { display:flex; flex-direction:column; gap:2px; }
+        .bud-v { font-family:'Fraunces',serif; font-weight:900; font-size:1.1rem; color:#2D1206; line-height:1; }
+        .bud-l { font-size:0.6rem; font-weight:700; color:#B06040; text-transform:uppercase; letter-spacing:.6px; }
+        .bud-badge { font-size:0.7rem; font-weight:800; padding:5px 12px; border-radius:20px; }
+        .bud-badge.ok   { background:rgba(34,197,94,.12); color:#16A34A; border:1.5px solid rgba(34,197,94,.3); }
+        .bud-badge.over { background:rgba(239,68,68,.1);  color:#DC2626; border:1.5px solid rgba(239,68,68,.28); }
+        .bud-note { flex-basis:100%; font-size:0.72rem; color:#8A4828; line-height:1.5; background:rgba(255,92,26,.06); border:1px solid rgba(255,92,26,.14); border-radius:10px; padding:7px 12px; }
+
+        /* ── cheaper swap chip ── */
+        .swap-chip { display:flex; align-items:center; gap:6px; margin-top:6px; background:rgba(34,197,94,.07); border:1px dashed rgba(34,197,94,.35); border-radius:9px; padding:4px 8px; font-size:0.62rem; font-weight:600; color:#15803D; line-height:1.35; }
+        .swap-btn { margin-left:auto; flex-shrink:0; border:none; border-radius:7px; padding:3px 9px; background:#16A34A; color:#fff; font-family:'DM Sans',sans-serif; font-size:0.6rem; font-weight:800; cursor:pointer; transition:all .2s; }
+        .swap-btn:hover { background:#15803D; transform:scale(1.05); }
       `}</style>
 
       <div className="pw">
@@ -391,6 +462,21 @@ export default function MealPlansPage() {
                   </select>
                 </div>
 
+                {/* Budget */}
+                <div>
+                  <div style={{ fontSize:"0.58rem", fontWeight:800, color:"#B06040", letterSpacing:".6px", textTransform:"uppercase", marginBottom:5 }}>💰 Budget ₹/month</div>
+                  <input
+                    className="ctrl-b"
+                    type="number"
+                    min={0}
+                    step={100}
+                    placeholder="e.g. 6000"
+                    value={budget}
+                    onChange={e => setBudget(e.target.value)}
+                    title="Monthly food budget — the plan will stay within it. Leave empty for no limit."
+                  />
+                </div>
+
                 <button className="gen-btn" disabled={loading} onClick={fetchPlan} style={{ marginLeft:"auto" }}>
                   <RefreshCw size={13} className={loading ? "spinning" : ""} />
                   {loading ? "Generating…" : "✨ Generate AI Plan"}
@@ -404,6 +490,55 @@ export default function MealPlansPage() {
                 ⚠️ {error}
               </div>
             )}
+
+            {/* ── BUDGET SUMMARY ── */}
+            {plan?.plan_cost && !loading && (() => {
+              const pc = plan.plan_cost;
+              const hasBudget = pc.daily_budget_inr != null;
+              const infeasible =
+                hasBudget && pc.min_feasible_day_inr != null && pc.daily_budget_inr! < pc.min_feasible_day_inr;
+              return (
+                <div className="card bud-banner fu" style={{ padding:"16px 20px" }}>
+                  <div className="bud-stat">
+                    <div className="bud-v">₹{Math.round(pc.weekly_cost_inr)}</div>
+                    <div className="bud-l">Plan cost / week</div>
+                  </div>
+                  <div className="bud-stat">
+                    <div className="bud-v">₹{Math.round(pc.avg_day_cost_inr)}</div>
+                    <div className="bud-l">Avg / day</div>
+                  </div>
+                  {hasBudget && (
+                    <>
+                      <div className="bud-stat">
+                        <div className="bud-v">₹{Math.round(pc.weekly_budget_inr!)}</div>
+                        <div className="bud-l">Your budget / week</div>
+                      </div>
+                      {pc.within_budget ? (
+                        <span className="bud-badge ok">✓ Within budget</span>
+                      ) : (
+                        <span className="bud-badge over">
+                          ⚠ Over on {pc.days_over_budget} {pc.days_over_budget === 1 ? "day" : "days"}
+                        </span>
+                      )}
+                      {infeasible && (
+                        <div className="bud-note">
+                          💡 Your budget (₹{Math.round(pc.daily_budget_inr!)}/day) is below the cheapest possible
+                          full day of meals (~₹{Math.round(pc.min_feasible_day_inr!)}). This is the most affordable
+                          healthy plan we could build — consider raising your budget slightly or marking mess meals
+                          you already get.
+                        </div>
+                      )}
+                    </>
+                  )}
+                  {!hasBudget && (
+                    <div className="bud-note">
+                      💡 Set a monthly budget above and regenerate — the AI will keep every day within it and
+                      suggest cheaper swaps.
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
 
             {/* ── PLANNER BOARD ── */}
             <div className="board">
@@ -451,6 +586,19 @@ export default function MealPlansPage() {
                                 <>
                                   <div className="ms-dish">{m.dish_name}</div>
                                   <div className="ms-meta">🔥{Math.round(m.calories_kcal)} kcal · 💪{m.protein_g.toFixed(1)}g</div>
+
+                                  {/* cheaper alternative (budget mode) */}
+                                  {m.cheaper_swap && (
+                                    <div className="swap-chip">
+                                      <span>
+                                        💡 {m.cheaper_swap.dish_name} · ₹{Math.round(m.cheaper_swap.price_inr)}
+                                        {" "}<strong>(save ₹{Math.round(m.cheaper_swap.savings_inr)})</strong>
+                                      </span>
+                                      <button className="swap-btn" onClick={() => applySwap(dayIdx, slot)} title="Replace with the cheaper dish">
+                                        Swap
+                                      </button>
+                                    </div>
+                                  )}
 
                                   {/* compact rating (per-day-slot) */}
                                   <div className="rxn-mini">

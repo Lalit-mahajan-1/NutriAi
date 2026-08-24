@@ -31,6 +31,17 @@ const normalizeMlActivityLevel = (activity: string) => {
   return "moderate";
 };
 
+export interface CheaperSwap {
+  dish_name: string;
+  price_inr: number;
+  calories_kcal: number;
+  protein_g: number;
+  carbs_g: number;
+  fats_g: number;
+  veg_nonveg: string;
+  savings_inr: number;
+}
+
 export interface MealEntry {
   dish_name: string;
   calories_kcal: number;
@@ -40,16 +51,29 @@ export interface MealEntry {
   category: string;
   veg_nonveg: string;
   price_inr?: number;
+  /** Nutritionally similar dish that costs less (budget mode) */
+  cheaper_swap?: CheaperSwap | null;
 }
 
 export interface DayPlan {
   day: number;
+  day_cost_inr?: number;
   meals: {
     breakfast: MealEntry | null;
     lunch: MealEntry | null;
     dinner: MealEntry | null;
     snack: MealEntry | null;
   };
+}
+
+export interface PlanCost {
+  weekly_cost_inr: number;
+  avg_day_cost_inr: number;
+  daily_budget_inr: number | null;
+  weekly_budget_inr: number | null;
+  within_budget: boolean | null;
+  days_over_budget: number | null;
+  min_feasible_day_inr: number | null;
 }
 
 export interface MacroTargets {
@@ -65,6 +89,7 @@ export interface WeeklyPlan {
   user_id: string;
   daily_targets: MacroTargets;
   days: DayPlan[];
+  plan_cost?: PlanCost;
 }
 
 export interface MealPreference {
@@ -137,6 +162,57 @@ export interface ScanRecord {
   pose_quality?: number;
   inputs: { height_cm: number; weight_kg: number; age: number; gender: string; activity_level: string };
   nutrition_plan?: { daily_targets: { calories: number; protein_g: number; carbs_g: number; fats_g: number; fiber_g: number; water_ml: number } };
+}
+
+export interface MealScanItem {
+  query: string;
+  dish_name: string;
+  calories_kcal: number;
+  protein_g: number;
+  carbs_g: number;
+  fat_g: number;
+  fiber_g: number;
+  iron_mg: number;
+  calcium_mg: number;
+  vitamin_c_mg: number;
+  sodium_mg: number;
+  folate_ug: number;
+  price_inr: number;
+}
+
+export interface MealScanResult {
+  matched: MealScanItem[];
+  unmatched: string[];
+  totals: {
+    calories_kcal: number;
+    protein_g: number;
+    carbs_g: number;
+    fat_g: number;
+    fiber_g: number;
+    iron_mg: number;
+    calcium_mg: number;
+    vitamin_c_mg: number;
+    sodium_mg: number;
+    folate_ug: number;
+  };
+  count: number;
+}
+
+/** Response from /detect-meal — a MealScanResult plus the AI-detected dish names */
+export interface MealDetectResult extends MealScanResult {
+  detection_available: boolean;
+  detected: string[];
+  error?: string;
+}
+
+export interface BudgetEntryDTO {
+  id: string;
+  date: string;
+  dish_name: string;
+  price_inr: number;
+  category: string;
+  calories_kcal: number;
+  veg_nonveg: string;
 }
 
 export interface MlBudgetAnalysis {
@@ -231,12 +307,15 @@ export const mlApi = {
     activityLevel: string = "moderate",
     dietaryPref: "veg" | "non-veg" = "veg",
     profile?: { height?: number | null; weight?: number | null; age?: number | null; gender?: string | null; user_id?: string } | null,
+    /** Monthly food budget (INR). Omit to use the saved budget; pass 0 for unconstrained. */
+    monthlyBudget?: number | null,
   ) => {
     const params = new URLSearchParams({
       goal,
       activity_level: activityLevel,
       dietary_pref: dietaryPref,
     });
+    if (monthlyBudget != null) params.set("monthly_budget", String(monthlyBudget));
     if (profile?.height != null && profile?.weight != null && profile?.age != null && profile?.gender != null) {
       params.set("height", String(profile.height));
       params.set("weight", String(profile.weight));
@@ -299,6 +378,27 @@ export const mlApi = {
     fetch(`${ML_URL}/meal-prices`)
       .then(r => r.json() as Promise<{ prices: Record<string, number>; count: number; avg_inr: number; min_inr: number; max_inr: number }>),
 
+  /** Look up a list of dish names in the local dataset and sum their nutrition */
+  mealScan: (items: string[]) =>
+    fetch(`${ML_URL}/meal-scan`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items }),
+    }).then(r => {
+      if (!r.ok) throw new Error("Meal scan failed");
+      return r.json() as Promise<MealScanResult>;
+    }),
+
+  /** Upload a meal photo → Claude vision detects dishes → summed nutrition */
+  detectMeal: (image: File) => {
+    const form = new FormData();
+    form.append("image", image);
+    return fetch(`${ML_URL}/detect-meal`, { method: "POST", body: form }).then(r => {
+      if (!r.ok) throw new Error("Detection failed");
+      return r.json() as Promise<MealDetectResult>;
+    });
+  },
+
   getBudget: (userId: string) =>
     fetch(`${ML_URL}/budget/${userId}`, {
       headers: {
@@ -330,6 +430,58 @@ export const mlApi = {
       },
     })
       .then(r => r.json() as Promise<MlBudgetAnalysis>),
+
+  // ── Budget spending log (persisted expense entries) ────────────────
+  getBudgetEntries: (userId: string) =>
+    fetch(`${ML_URL}/budget-entries/${userId}`, {
+      headers: {
+        ...(localStorage.getItem("nutrisight_token")
+          ? { Authorization: `Bearer ${localStorage.getItem("nutrisight_token")}` }
+          : {}),
+      },
+    })
+      .then(r => r.json() as Promise<{ entries: BudgetEntryDTO[]; count: number }>),
+
+  addBudgetEntry: (userId: string, entry: BudgetEntryDTO) =>
+    fetch(`${ML_URL}/budget-entries/${userId}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(localStorage.getItem("nutrisight_token")
+          ? { Authorization: `Bearer ${localStorage.getItem("nutrisight_token")}` }
+          : {}),
+      },
+      body: JSON.stringify(entry),
+    }).then(r => {
+      if (!r.ok) throw new Error("Failed to save entry");
+      return r.json() as Promise<{ success: boolean; entry: BudgetEntryDTO }>;
+    }),
+
+  deleteBudgetEntry: (userId: string, entryId: string) =>
+    fetch(`${ML_URL}/budget-entries/${userId}/${entryId}`, {
+      method: "DELETE",
+      headers: {
+        ...(localStorage.getItem("nutrisight_token")
+          ? { Authorization: `Bearer ${localStorage.getItem("nutrisight_token")}` }
+          : {}),
+      },
+    }).then(r => {
+      if (!r.ok) throw new Error("Failed to delete entry");
+      return r.json() as Promise<{ success: boolean }>;
+    }),
+
+  clearBudgetEntries: (userId: string) =>
+    fetch(`${ML_URL}/budget-entries/${userId}`, {
+      method: "DELETE",
+      headers: {
+        ...(localStorage.getItem("nutrisight_token")
+          ? { Authorization: `Bearer ${localStorage.getItem("nutrisight_token")}` }
+          : {}),
+      },
+    }).then(r => {
+      if (!r.ok) throw new Error("Failed to clear entries");
+      return r.json() as Promise<{ success: boolean; deleted: number }>;
+    }),
 };
 
 // ─── Main Backend (Express, port 5000) ────────────────────────────────────

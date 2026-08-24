@@ -123,13 +123,20 @@ class LinUCBBandit:
         candidate_df,
         weekly_counts: Dict[str, int],
         max_per_week: int = 2,
+        price_cap: float | None = None,
+        value_weight: float = 0.0,
     ):
         """
         Select best dish among candidates for this user & meal slot.
+
+        price_cap:    if set, dishes priced above it are excluded (budget mode).
+        value_weight: if > 0, adds a protein-per-rupee bonus so cheap,
+                      protein-dense dishes rank higher under a budget.
         """
         user_arms = self._get_user_arms(profile.user_id)
+        has_price = "Price (INR)" in candidate_df.columns
 
-        # Filter out hard constraints (disliked meals & diversity)
+        # Filter out hard constraints (disliked meals, diversity, budget)
         filtered_rows = []
         for _, row in candidate_df.iterrows():
             dish_id = row["Dish Name"]
@@ -141,7 +148,24 @@ class LinUCBBandit:
             if weekly_counts.get(dish_id, 0) >= max_per_week:
                 continue  # diversity constraint
 
+            if price_cap is not None and has_price and float(row["Price (INR)"]) > price_cap:
+                continue  # budget constraint
+
             filtered_rows.append(row)
+
+        # Budget fallback: if the cap filtered out everything, offer the
+        # cheapest non-disliked dishes instead of an empty slot.
+        if not filtered_rows and price_cap is not None and has_price:
+            fallback = []
+            for _, row in candidate_df.iterrows():
+                key = (profile.user_id, row["Dish Name"])
+                if self.dislikes.get(key, 0) > 0:
+                    continue
+                if weekly_counts.get(row["Dish Name"], 0) >= max_per_week:
+                    continue
+                fallback.append(row)
+            fallback.sort(key=lambda r: float(r["Price (INR)"]))
+            filtered_rows = fallback[:5]
 
         if not filtered_rows:
             return None  # caller should handle
@@ -169,6 +193,14 @@ class LinUCBBandit:
                    self.dislikes.get((profile.user_id, dish_id), 0)
             if seen == 0:
                 score += 0.05
+
+            # Budget mode: reward protein per rupee. 0.3 g/₹ (e.g. 12 g dal
+            # for ₹40) already maxes out the bonus, so it nudges rather
+            # than dominates the LinUCB score.
+            if value_weight > 0 and has_price:
+                price = max(float(row["Price (INR)"]), 1.0)
+                protein_per_rupee = float(row["Protein (g)"]) / price
+                score += value_weight * min(protein_per_rupee / 0.3, 1.0)
 
             if score > best_score:
                 best_score = score

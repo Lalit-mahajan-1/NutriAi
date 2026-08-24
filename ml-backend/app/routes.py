@@ -9,11 +9,12 @@ NutriSight ML API routes.
 """
 
 import os
+import base64
 import logging
 from datetime import datetime, timezone
 from typing import Optional, Any, Dict
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, UploadFile, File
 from pydantic import BaseModel
 import numpy as np
 import httpx
@@ -384,12 +385,174 @@ async def meal_prices():
     }
 
 
+# ── Meal scan: look up dishes in the local dataset & sum nutrition ───────────
+class MealScanRequest(BaseModel):
+    items: list[str]
+
+
+def _find_dish_row(query: str):
+    """Case-insensitive lookup of a dish in food_df: exact → startswith → contains."""
+    import re as _re
+    q = str(query).strip().lower()
+    if not q:
+        return None
+    lower = food_df["Dish Name"].astype(str).str.lower()
+    exact = food_df[lower == q]
+    if not exact.empty:
+        return exact.iloc[0]
+    starts = food_df[lower.str.startswith(q)]
+    if not starts.empty:
+        return starts.iloc[0]
+    contains = food_df[lower.str.contains(_re.escape(q), na=False)]
+    if not contains.empty:
+        # shortest matching name = most specific match
+        idx = contains["Dish Name"].astype(str).str.len().idxmin()
+        return contains.loc[idx]
+    return None
+
+
+_SCAN_FIELDS = {
+    "calories_kcal": ("Calories (kcal)",),
+    "protein_g": ("Protein (g)",),
+    "carbs_g": ("Carbs (g)", "Carbohydrate (g)"),
+    "fat_g": ("Fats (g)",),
+    "fiber_g": ("Fibre (g)", "Fiber (g)"),
+    "iron_mg": ("Iron (mg)",),
+    "calcium_mg": ("Calcium (mg)",),
+    "vitamin_c_mg": ("Vitamin C (mg)",),
+    "sodium_mg": ("Sodium (mg)",),
+    "folate_ug": ("Folate (µg)", "Folate (ug)"),
+}
+
+
+def _scan_items(items: list[str]) -> dict:
+    """Match dish names against the local dataset and sum their nutrition."""
+    def col(row, *names) -> float:
+        for n in names:
+            if n in row.index:
+                try:
+                    v = float(row[n])
+                    return 0.0 if v != v else v  # guard NaN
+                except (TypeError, ValueError):
+                    continue
+        return 0.0
+
+    matched, unmatched = [], []
+    totals = {k: 0.0 for k in _SCAN_FIELDS}
+
+    for item in items:
+        row = _find_dish_row(item)
+        if row is None:
+            unmatched.append(item)
+            continue
+        entry = {"query": item, "dish_name": str(row["Dish Name"])}
+        for key, cols in _SCAN_FIELDS.items():
+            val = col(row, *cols)
+            entry[key] = round(val, 2)
+            totals[key] += val
+        entry["price_inr"] = round(col(row, "Price (INR)"), 2)
+        matched.append(entry)
+
+    return {
+        "matched": matched,
+        "unmatched": unmatched,
+        "totals": {k: round(v, 1) for k, v in totals.items()},
+        "count": len(matched),
+    }
+
+
+@router.post("/meal-scan")
+async def meal_scan(req: MealScanRequest):
+    """
+    Given a list of dish names (e.g. from a scanned plate), match each against
+    the local Indian-food dataset and return per-item + summed nutrition.
+    Fully offline — no external API key required.
+    """
+    return _scan_items(req.items)
+
+
+# ── Meal photo detection (Claude vision) ─────────────────────────────────────
+_DETECT_PROMPT = (
+    "You are a food-recognition system for an Indian nutrition app. Look at this "
+    "photo of a meal/plate and identify the distinct food dishes visible. Use common, "
+    "simple dish names, preferring Indian names where they apply (e.g. 'Idli', 'Dosa', "
+    "'Rajma', 'Paneer', 'Roti', 'Rice', 'Dal', 'Sambar', 'Curd', 'Poha', 'Upma'). "
+    "List each distinct item once. Respond with ONLY a JSON array of dish-name strings "
+    "and nothing else, e.g. [\"Idli\", \"Sambar\", \"Coconut chutney\"]. If you cannot "
+    "identify any food, respond with []."
+)
+
+
+def _extract_dish_list(text: str) -> list[str]:
+    """Parse a JSON array of dish names out of the model's text response."""
+    import json as _json
+    import re as _re
+    text = (text or "").strip()
+    candidates = [text]
+    m = _re.search(r"\[.*\]", text, _re.DOTALL)
+    if m:
+        candidates.append(m.group(0))
+    for candidate in candidates:
+        try:
+            data = _json.loads(candidate)
+            if isinstance(data, list):
+                return [str(d).strip() for d in data if str(d).strip()]
+        except (ValueError, TypeError):
+            continue
+    return []
+
+
+@router.post("/detect-meal")
+async def detect_meal(image: UploadFile = File(...)):
+    """
+    Accept a meal photo, ask Claude vision to identify the dishes, then look those
+    dishes up in the local dataset and return summed nutrition.
+
+    Degrades gracefully: if ANTHROPIC_API_KEY is unset or the call fails, returns
+    detection_available=false so the frontend can fall back to manual entry.
+    """
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key or image is None:
+        return {"detection_available": False, "detected": [], **_scan_items([])}
+
+    try:
+        raw = await image.read()
+        media_type = image.content_type or "image/jpeg"
+        if media_type not in ("image/jpeg", "image/png", "image/gif", "image/webp"):
+            media_type = "image/jpeg"
+        b64 = base64.standard_b64encode(raw).decode("utf-8")
+
+        import anthropic
+        client = anthropic.Anthropic(api_key=api_key)
+        message = client.messages.create(
+            model="claude-opus-4-8",
+            max_tokens=1024,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": b64}},
+                    {"type": "text", "text": _DETECT_PROMPT},
+                ],
+            }],
+        )
+        text = "".join(b.text for b in message.content if getattr(b, "type", None) == "text")
+        detected = _extract_dish_list(text)[:12]
+    except Exception as exc:
+        logger.warning("Vision detection failed: %s", exc)
+        return {"detection_available": False, "detected": [], "error": str(exc), **_scan_items([])}
+
+    return {"detection_available": True, "detected": detected, **_scan_items(detected)}
+
+
 # ── Weekly meal plan (RL) for current user ─────────────────────────────────
 @router.get("/weekly-plan")
 async def weekly_plan(
     goal: str = "maintenance",
     activity_level: str = "moderate",
     dietary_pref: str = "veg",
+    # Monthly food budget in INR. Falls back to the persisted user_budgets
+    # doc when omitted; pass 0 to force an unconstrained plan.
+    monthly_budget: Optional[float] = None,
     # ── Optional profile fields sent directly from the frontend ───────────
     # When these are provided the Node backend call is skipped entirely,
     # eliminating the httpx.ReadTimeout issue.
@@ -464,10 +627,22 @@ async def weekly_plan(
         allergies=None,
     )
 
-    # ── 4) Generate weekly plan via RL recommender ───────────────────────
-    plan = meal_recommender.generate_weekly_plan(profile)
+    # ── 4) Resolve budget (query param wins; else persisted budget) ─────
+    daily_budget: Optional[float] = None
+    if monthly_budget is None and resolved_user_id != "anonymous":
+        try:
+            budget_doc = await get_budget_collection().find_one({"user_id": resolved_user_id})
+            if budget_doc:
+                monthly_budget = float(budget_doc.get("monthly_budget", 0) or 0)
+        except Exception:
+            logger.warning("Budget lookup failed; generating unconstrained plan.")
+    if monthly_budget and monthly_budget > 0:
+        daily_budget = monthly_budget / 30.0
 
-    # ── 5) Inject fiber_g and water_ml into daily_targets ────────────────
+    # ── 5) Generate weekly plan via RL recommender ───────────────────────
+    plan = meal_recommender.generate_weekly_plan(profile, daily_budget_inr=daily_budget)
+
+    # ── 6) Inject fiber_g and water_ml into daily_targets ────────────────
     cal = plan["daily_targets"].get("calories", 2000)
     plan["daily_targets"]["fiber_g"]  = round(14 * cal / 1000, 1)
     plan["daily_targets"]["water_ml"] = round(35 * profile.weight_kg)
@@ -727,6 +902,73 @@ async def delete_budget(user_id: str):
     return {"success": True, "message": "Budget deleted"}
 
 
+# ── Budget spending log (persistent expense entries) ─────────────────────────
+class BudgetEntryModel(BaseModel):
+    id: str                       # client-generated uuid, unique per (user, entry)
+    date: str                     # ISO timestamp
+    dish_name: str
+    price_inr: float
+    category: str = ""
+    calories_kcal: float = 0.0
+    veg_nonveg: str = ""
+
+
+def get_budget_entries_collection():
+    from app.database import get_db
+    return get_db()["budget_entries"]
+
+
+def _entry_doc(user_id: str, data: BudgetEntryModel) -> dict:
+    return {
+        "user_id": user_id,
+        "id": data.id,
+        "date": data.date,
+        "dish_name": data.dish_name,
+        "price_inr": float(data.price_inr),
+        "category": data.category,
+        "calories_kcal": float(data.calories_kcal),
+        "veg_nonveg": data.veg_nonveg,
+    }
+
+
+@router.get("/budget-entries/{user_id}")
+async def get_budget_entries(user_id: str):
+    """Return every logged expense for a user, oldest first."""
+    col = get_budget_entries_collection()
+    cursor = col.find({"user_id": user_id}, {"_id": 0, "user_id": 0}).sort("date", 1)
+    entries = [doc async for doc in cursor]
+    return {"entries": entries, "count": len(entries)}
+
+
+@router.post("/budget-entries/{user_id}", status_code=201)
+async def add_budget_entry(user_id: str, data: BudgetEntryModel):
+    """
+    Upsert a single expense entry keyed on (user_id, id) so re-posting the
+    same client id is idempotent (no duplicates on retry).
+    """
+    col = get_budget_entries_collection()
+    doc = _entry_doc(user_id, data)
+    await col.update_one({"user_id": user_id, "id": data.id}, {"$set": doc}, upsert=True)
+    doc.pop("user_id", None)
+    return {"success": True, "entry": doc}
+
+
+@router.delete("/budget-entries/{user_id}/{entry_id}")
+async def delete_budget_entry(user_id: str, entry_id: str):
+    col = get_budget_entries_collection()
+    result = await col.delete_one({"user_id": user_id, "id": entry_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Entry not found.")
+    return {"success": True}
+
+
+@router.delete("/budget-entries/{user_id}")
+async def clear_budget_entries(user_id: str):
+    col = get_budget_entries_collection()
+    result = await col.delete_many({"user_id": user_id})
+    return {"success": True, "deleted": result.deleted_count}
+
+
 @router.get("/budget-analysis/{user_id}")
 async def budget_analysis(
     user_id: str,
@@ -778,10 +1020,18 @@ async def budget_analysis(
         dietary_pref=dietary_pref,      # type: ignore[arg-type]
         allergies=None,
     )
-    plan = meal_recommender.generate_weekly_plan(profile)
-
     budget_col = get_budget_collection()
     budget_doc = await budget_col.find_one({"user_id": user_id})
+
+    # Constrain the generated plan to the saved budget so the analysis
+    # reflects what the user can actually afford.
+    daily_budget: Optional[float] = None
+    if budget_doc:
+        saved_monthly = float(budget_doc.get("monthly_budget", 0) or 0)
+        if saved_monthly > 0:
+            daily_budget = saved_monthly / 30.0
+
+    plan = meal_recommender.generate_weekly_plan(profile, daily_budget_inr=daily_budget)
 
     weekly_cost = 0.0
     daily_costs = []
@@ -873,4 +1123,5 @@ async def budget_analysis(
         "total_weekly_fats": round(total_fats, 1),
         "has_plan": len(plan.get("days", [])) > 0,
         "has_budget": budget_doc is not None,
+        "plan_cost": plan.get("plan_cost"),
     }
